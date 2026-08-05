@@ -142,6 +142,23 @@ const ACT_GROUPS = { court:"Court & field", gym:"Gym", outdoor:"Outdoor", recove
 const metCalories = (met, minutes, lbs, intensity=1) =>
   Math.round(met * intensity * (lbs * 0.4536) * (minutes / 60));
 
+/* Calories for a run or walk, on the same MET basis the session logger uses so
+   the two agree. With a time we can get speed and pick the MET off it — MET
+   rises roughly linearly with pace over the range a person actually moves at.
+   With distance but no time, fall back to cost-per-mile, which barely varies
+   with speed for running (~0.75 kcal per lb per mile, gross). */
+const paceMET = (mph, walking) => walking
+  ? clamp(1.3 * mph, 2.3, 8)
+  : clamp(1.65 * mph, 6, 20);
+
+function activityCalories({ miles, minutes, lbs, walking }) {
+  const mi = +miles || 0, min = +minutes || 0;
+  if (mi > 0 && min > 0) return metCalories(paceMET(mi / (min / 60), walking), min, lbs);
+  if (mi > 0) return Math.round(mi * lbs * (walking ? 0.42 : 0.75));
+  if (min > 0) return metCalories(walking ? 3.8 : 9.8, min, lbs);
+  return 0;
+}
+
 const MEAL_SLOTS = ["breakfast", "lunch", "snack", "dinner"];
 const SLOT_LABEL = { breakfast:"Breakfast", lunch:"Lunch", snack:"Snacks & Fuel", dinner:"Dinner" };
 
@@ -602,8 +619,20 @@ function useDerived(state, date) {
 
     // Burn: real Garmin data wins, formula is the fallback
     const formulaBurn = estimateBurn(P, latest);
+    /* What the day's logged training cost, summed off the workouts themselves. */
+    const trainingCal = (day.workouts || []).reduce((a,w) => a + (w.calories || 0), 0);
+
     let burn = formulaBurn, burnSource = "estimate";
-    if (typeof day.burn === "number" && day.burn > 0) {
+    if (day.burnKind === "training") {
+      /* Training calories cover structured work only — no walking to class, no
+         standing around — so the baseline underneath them is a light day
+         (BMR * 1.2), not the ~BMR used for a watch's whole-day active figure.
+         formulaBurn carries a 1.55 activity factor, so 1.2/1.55 = 0.774 backs
+         it down. day.burn, when set, overrides the logged sum. */
+      const act = (typeof day.burn === "number" && day.burn > 0) ? day.burn : trainingCal;
+      burn = Math.round(formulaBurn * 0.774 + act);
+      burnSource = (typeof day.burn === "number" && day.burn > 0) ? "training+set" : "training";
+    } else if (typeof day.burn === "number" && day.burn > 0) {
       /* three ways to say what today cost:
          total  — the whole day, replaces the estimate outright
          active — a whole day's *active* calories; resting burn is added under it
@@ -680,7 +709,7 @@ function useDerived(state, date) {
     const totalMiles = Object.values(state.days).reduce((s,d) =>
       s + d.workouts.filter(w=>w.type==="run").reduce((a,w)=>a+(w.miles||0),0), 0);
 
-    return { P, day, wk, wkStart, weekDays, cal, pro, carb, fat, burn, burnSource, formulaBurn,
+    return { P, day, wk, wkStart, weekDays, cal, pro, carb, fat, burn, burnSource, formulaBurn, trainingCal,
       calTarget, weights, trend, latest, latestTrend, weekMiles, weekTarget,
       avgCal, avgPro, streak, totalDeficit, lost, perWeek, projDate, totalMiles,
       weekBudget, weekSpent, perDayLeft, daysAfter, dayIdx, freeDaysThisWeek, swap };
@@ -1266,7 +1295,10 @@ function BurnForm({ ctx, onDone }) {
   const [val, setVal] = useState(D.day.burn != null ? String(D.day.burn) : "");
 
   const n = Math.round(+val || 0);
-  const effBurn = kind === "active" ? Math.round(D.formulaBurn * 0.62 + n)
+  // In training mode a blank input means "follow the logged workouts".
+  const act = kind === "training" && val.trim() === "" ? D.trainingCal : n;
+  const effBurn = kind === "training" ? Math.round(D.formulaBurn * 0.774 + act)
+                : kind === "active" ? Math.round(D.formulaBurn * 0.62 + n)
                 : kind === "extra"  ? Math.round(D.formulaBurn + n)
                 : n;
   const newTarget = Math.max(1700, Math.round((effBurn - D.P.deficit) / 25) * 25);
@@ -1278,8 +1310,21 @@ function BurnForm({ ctx, onDone }) {
   const looksLikeWorkout = kind === "total" && n > 0 && n < D.formulaBurn * 0.5;
   const looksLikeWholeDay = kind === "active" && n > 2500;
 
+  /* Switching into training mode starts it in auto. Carrying a number over from
+     another mode leaves the sheet advertising "follow my training" while a stale
+     override drives the target — the headline figure and the math disagree. */
+  const pickKind = (k) => { if (k === "training" && kind !== "training") setVal(""); setKind(k); };
+
+  const reset = () => { patchDay(date, { burn:null, burnKind:"total", burnFrom:null }); flash("Back to the estimate"); onDone(); };
   const save = () => {
-    if (val.trim() === "") { patchDay(date, { burn:null, burnFrom:null }); flash("Back to the estimate"); onDone(); return; }
+    if (kind === "training") {
+      // Blank is meaningful here: it means keep following the logged workouts.
+      if (val.trim() !== "" && (n <= 0 || n > 12000)) { flash("That doesn't look like a calorie burn", "err"); return; }
+      patchDay(date, { burn: val.trim() === "" ? null : n, burnKind:"training", burnFrom:"manual" });
+      flash(`Following your training — eat ${newTarget.toLocaleString()} today`);
+      onDone(); return;
+    }
+    if (val.trim() === "") { reset(); return; }
     if (n <= 0 || n > 12000) { flash("That doesn't look like a calorie burn", "err"); return; }
     patchDay(date, { burn:n, burnKind:kind, burnFrom:"manual" });
     flash(`Burn set — eat ${newTarget.toLocaleString()} today`);
@@ -1288,15 +1333,35 @@ function BurnForm({ ctx, onDone }) {
 
   return (
     <div>
-      <Toggle color="var(--ink)" value={kind} onPick={setKind}
+      <div style={{ marginBottom:7 }}>
+        <Toggle color="var(--moss)" value={kind} onPick={pickKind}
+          opts={[["training","From my training"]]} />
+      </div>
+      <Toggle color="var(--ink)" value={kind} onPick={pickKind}
         opts={[["total","Whole day"],["active","Active only"],["extra","Extra today"]]} />
       <p style={{ margin:"9px 0 11px", fontSize:12, color:"var(--ink2)", lineHeight:1.5 }}>
-        {kind === "total"
+        {kind === "training"
+          ? "Adds up the calories on the runs, walks and sessions you've logged today, over a light-day baseline. Updates itself as you log more."
+          : kind === "total"
           ? "The total your watch shows for the whole day, resting burn included. Replaces the estimate."
           : kind === "active"
           ? "Your watch's active calories for the whole day — not one workout. Resting burn is added underneath."
           : "Work that went beyond a normal day for you. Added on top of the estimate."}
       </p>
+
+      {kind === "training" && (
+        <div style={{ margin:"0 0 11px", padding:"11px 12px", background:"rgba(76,140,74,.09)", borderRadius:5 }}>
+          <div className="eyebrow" style={{ color:"var(--moss)" }}>Logged training today</div>
+          <div className="dsp" style={{ fontSize:24, color:"var(--moss)", marginTop:2 }}>
+            {D.trainingCal.toLocaleString()}<span className="mono" style={{ fontSize:11 }}> cal</span>
+          </div>
+          <div className="mono" style={{ fontSize:10, color:"var(--ink3)", marginTop:3, lineHeight:1.45 }}>
+            {D.trainingCal === 0
+              ? "Nothing logged yet — log a run, walk or session and this fills in."
+              : "Leave the box empty to track this automatically."}
+          </div>
+        </div>
+      )}
 
       {kind === "extra" && (
         <div style={{ margin:"0 0 11px", padding:"10px 12px", background:"rgba(30,111,217,.07)",
@@ -1309,10 +1374,10 @@ function BurnForm({ ctx, onDone }) {
 
       <input type="number" inputMode="numeric" step="10" value={val} autoFocus
         onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()}
-        placeholder={kind === "total" ? String(D.formulaBurn) : kind === "active" ? "900" : "400"}
+        placeholder={kind === "training" ? String(D.trainingCal || 0) : kind === "total" ? String(D.formulaBurn) : kind === "active" ? "900" : "400"}
         style={{ fontSize:26, fontFamily:"'IBM Plex Mono',monospace", textAlign:"center", padding:"12px 6px" }} />
 
-      {n > 0 && (
+      {(n > 0 || kind === "training") && (
         <div className="rise" style={{ marginTop:11, padding:"12px 13px", borderRadius:5,
           background: delta >= 0 ? "rgba(76,140,74,.09)" : "rgba(198,65,58,.08)" }}>
           <div className="eyebrow" style={{ color: delta >= 0 ? "var(--moss)" : "var(--warn)" }}>Eat today</div>
@@ -1337,8 +1402,8 @@ function BurnForm({ ctx, onDone }) {
 
       <div style={{ display:"flex", gap:7, marginTop:13 }}>
         <Btn kind="solid" size="md" full onClick={save} disabled={val.trim() !== "" && n <= 0}>Save</Btn>
-        {D.day.burn != null && (
-          <Btn kind="ghost" size="md" onClick={()=>{ patchDay(date,{burn:null, burnFrom:null}); flash("Back to the estimate"); onDone(); }}>Reset</Btn>
+        {(D.day.burn != null || D.day.burnKind === "training") && (
+          <Btn kind="ghost" size="md" onClick={reset}>Reset</Btn>
         )}
       </div>
       <div className="mono" style={{ fontSize:9.5, color:"var(--ink3)", marginTop:9, lineHeight:1.5 }}>
@@ -1616,6 +1681,8 @@ const burnLabel = (src) =>
   : src === "manual+extra" ? "estimate + extra"
   : src === "garmin+bmr" ? "active, from Garmin"
   : src === "garmin+extra" ? "estimate + extra"
+  : src === "training" ? "from your training"
+  : src === "training+set" ? "training, adjusted"
   : "from Garmin";
 
 const RunChip = ({ miles }) => (
@@ -2389,7 +2456,7 @@ function Train({ ctx }) {
                     {w.miles && w.minutes ? `${fmtPace(paceOf(w.miles,w.minutes))}/mi · ` : ""}
                     {w.rounds != null ? `${w.rounds} rounds${w.reps?` + ${w.reps}`:""} · ` : ""}
                     {w.hr ? `${w.hr} bpm · ` : ""}
-                    {w.calories && w.type==="session" ? `~${w.calories} cal · ` : ""}
+                    {w.calories ? `~${w.calories} cal · ` : ""}
                     {w.source==="garmin" ? "garmin" : "manual"}
                   </div>
                 </button>
@@ -2472,8 +2539,12 @@ function RunForm({ ctx, onDone }) {
   const [kind, setKind] = useState("easy");
   const [mode, setMode] = useState("run");          // run | walk
   const [surface, setSurface] = useState("outside"); // outside | treadmill
+  const [kcal, setKcal] = useState("");              // blank = use the estimate
   const pace = paceOf(+m, +t);
   const isWalk = mode === "walk";
+
+  const estKcal = activityCalories({ miles:m, minutes:t, lbs:D.latest, walking:isWalk });
+  const finalKcal = kcal.trim() !== "" ? Math.round(+kcal) || 0 : estKcal;
 
   const baseName = isWalk ? "Walk"
     : kind==="long" ? "Long Run" : kind==="tempo" ? "Tempo Run" : "Easy Run";
@@ -2527,12 +2598,28 @@ function RunForm({ ctx, onDone }) {
           </div>
         </div>
       )}
+      {estKcal > 0 && (
+        <div style={{ marginTop:11 }}>
+          <Eyebrow>Calories burned</Eyebrow>
+          <div style={{ display:"flex", alignItems:"center", gap:9, marginTop:6 }}>
+            <input type="number" inputMode="numeric" step="10" value={kcal}
+              onChange={e=>setKcal(e.target.value)} placeholder={String(estKcal)}
+              style={{ width:96, textAlign:"center", fontFamily:"'IBM Plex Mono',monospace", padding:"9px 4px" }} />
+            <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)", lineHeight:1.45 }}>
+              {kcal.trim() === ""
+                ? <>estimated from {t ? "your pace" : "the distance"} · type to override</>
+                : <>set by you · clear to go back to {estKcal}</>}
+            </div>
+          </div>
+        </div>
+      )}
       <Btn kind="lane" size="lg" full style={{ marginTop:13 }} disabled={!m}
         onClick={()=>{
           addWorkout({ type: isWalk ? "walk" : "run", name,
             miles:+m, minutes:+t||null, hr:+hr||null,
+            calories: finalKcal || null,
             kind: isWalk ? null : kind, surface });
-          flash(`${m} mi ${isWalk ? "walked" : "logged"}`); onDone(); }}>
+          flash(`${m} mi ${isWalk ? "walked" : "logged"} · ${finalKcal} cal`); onDone(); }}>
         Log {m||"—"} miles
       </Btn>
     </div>

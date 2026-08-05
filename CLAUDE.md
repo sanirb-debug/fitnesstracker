@@ -131,6 +131,20 @@ The wrapper zeroes `.hc`'s own page layout (`minHeight`, `background`,
 | `total` | the number as-is | whole-day total from a watch |
 | `active` | `formulaBurn*0.62 + n` | a whole day's *active* calories; `*0.62` backs the 1.55 activity factor out of the estimate, leaving ≈BMR |
 | `extra` | `formulaBurn + n` | work beyond a normal day |
+| `training` | `formulaBurn*0.774 + (n ?? trainingCal)` | the logged workouts' own calories, over a light-day baseline |
+
+`training` is the auto-following mode: `trainingCal` is the sum of `calories`
+across the day's workouts, so logging a run raises the burn and the eating
+target with no further input. `day.burn` is an *optional override* there —
+`null` means keep following the workouts, which is why the save path treats a
+blank input as meaningful rather than as "clear it". Its baseline is
+`0.774` (`1.2/1.55`, a light day) rather than `active`'s `0.62` (≈BMR): training
+calories cover structured work only and miss all the incidental daily movement
+that a watch's active figure already includes.
+
+Runs and walks estimate their own calories via `activityCalories()`, which picks
+a MET off pace and hands it to the same `metCalories()` the session logger uses,
+so the two agree. It falls back to cost-per-mile when there's no time.
 
 **`formulaBurn` already includes an activity factor of 1.55** — the plan's usual
 training is baked in. So "log one workout's calories" is not a safe input: as
