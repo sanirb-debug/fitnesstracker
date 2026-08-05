@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>The Cut — 21 Week Training Log</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5" />
+<meta name="description" content="Private training and nutrition log for a 21-week cut: food, runs, Cindy benchmarks, weight trend." />
+<meta name="theme-color" content="#E8EAE3" />
+<meta name="color-scheme" content="light" />
+
+<!-- installs to the iOS home screen as a standalone app -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="The Cut" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<link rel="icon" href="./favicon.png" type="image/png" />
+<link rel="manifest" href="./manifest.webmanifest" />
+
+<style>
+  html, body { margin:0; padding:0; background:#E8EAE3; }
+  body { overscroll-behavior-y:none; -webkit-tap-highlight-color:transparent; }
+  #root { min-height:100vh; min-height:100dvh; }
+  /* shown until the bundle boots, then replaced */
+  #boot { min-height:100dvh; display:grid; place-items:center; text-align:center;
+    font-family:system-ui,-apple-system,sans-serif; color:#16202B; }
+  #boot b { display:block; font-size:38px; letter-spacing:-.01em; font-weight:800; }
+  #boot span { display:block; font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:#94A0AA; margin-top:8px; }
+  @keyframes bp { 0%,100%{opacity:1} 50%{opacity:.35} }
+  #boot { animation:bp 1.1s ease-in-out infinite; }
+  #nojs { max-width:320px; font-size:14px; line-height:1.5; }
+</style>
+</head>
+<body>
+  <div id="root"><div id="boot"><div><b>THE CUT</b><span>Loading your log</span></div></div></div>
+  <noscript><div id="nojs" style="padding:32px;font-family:system-ui">This log needs JavaScript enabled.</div></noscript>
+
+  <script src="./app.js" defer></script>
+  <script>
+    // Offline support. Registered after load so it never delays first paint.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("./sw.js").catch(function () { /* offline is a bonus, not a requirement */ });
+      });
+    }
+  </script>
+</body>
+</html>
