@@ -122,6 +122,13 @@ both silent:
 The wrapper zeroes `.hc`'s own page layout (`minHeight`, `background`,
 `paddingTop`) so it paints nothing itself.
 
+**Walks are `type:"walk"`, not `type:"run"`.** `weekMiles`, the plan bar, the
+per-day dots and the stats totals all filter on `type === "run"`, so a walk typed
+as a run silently counts walking miles toward the week's running target. A
+treadmill *run* is still `type:"run"` and still counts — only `surface`
+(`outside` | `treadmill`) differs. `EditWorkout` treats anything with `miles` as
+distance-shaped, so walks get the distance/pace fields for free.
+
 **Never declare a component inside another component's render.** `NumField` sits
 at module level for this reason. Declared inside `EditWorkout` it becomes a new
 component type on every render, so React unmounts and remounts the input on each

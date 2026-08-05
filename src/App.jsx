@@ -1017,6 +1017,7 @@ function Header({ D, date, setDate, onSettings, saveStatus, storageOK }) {
 function Today({ ctx }) {
   const { D, date, patchDay, addFood, flash, setTab, state } = ctx;
   const [swapOpen, setSwapOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
   const sched = DAY_TEMPLATE[dow(date)];
   const left = D.calTarget - D.cal;
   const free = D.day.free;
@@ -1050,13 +1051,17 @@ function Today({ ctx }) {
                 <span className="mono" style={{ fontSize:10.5, color:"var(--ink3)" }}>/ {D.P.proteinTarget}g</span>
               </div>
             </div>
-            <div>
+            <button onClick={()=>setStepsOpen(true)} className="tapfade" aria-label="Set step count"
+              style={{ textAlign:"left", background:"transparent", padding:0 }}>
               <Eyebrow color="var(--lane)">◉ Steps</Eyebrow>
               <div style={{ display:"flex", alignItems:"baseline", gap:4 }}>
                 <span className="dsp" style={{ fontSize:26 }}>{(D.day.steps||0).toLocaleString()}</span>
                 <span className="mono" style={{ fontSize:10.5, color:"var(--ink3)" }}>/ {(D.P.stepTarget/1000)}k</span>
               </div>
-            </div>
+              <div className="mono" style={{ fontSize:9, color:"var(--ink3)", marginTop:2 }}>
+                {D.day.steps == null ? "tap to set" : "tap to edit"}
+              </div>
+            </button>
           </div>
         </div>
 
@@ -1160,6 +1165,71 @@ function Today({ ctx }) {
           <SwapPicker ctx={ctx} onDone={()=>setSwapOpen(false)} />
         </Sheet>
       )}
+
+      {stepsOpen && (
+        <Sheet onClose={()=>setStepsOpen(false)} title="Step count">
+          <StepsForm ctx={ctx} onDone={()=>setStepsOpen(false)} />
+        </Sheet>
+      )}
+    </div>
+  );
+}
+
+/* ---------- steps: whatever your phone or watch is showing right now ---------- */
+
+function StepsForm({ ctx, onDone }) {
+  const { D, date, patchDay, flash } = ctx;
+  const [val, setVal] = useState(D.day.steps != null ? String(D.day.steps) : "");
+  const target = D.P.stepTarget;
+
+  /* Held in a ref so several taps of a bump chip in one tick each add — reading
+     the number off state would make them all compute from the same stale value. */
+  const ref = useRef(val);
+  const put = (v) => { ref.current = v; setVal(v); };
+  const bump = (n) => put(String(Math.max(0, Math.round(+ref.current || 0) + n)));
+
+  const n = Math.round(+val || 0);
+  const save = () => {
+    if (val.trim() === "") { patchDay(date, { steps:null }); flash("Steps cleared"); onDone(); return; }
+    if (n < 0 || n > 200000) { flash("That doesn't look like a step count", "err"); return; }
+    patchDay(date, { steps:n });
+    flash(`${n.toLocaleString()} steps logged`);
+    onDone();
+  };
+
+  return (
+    <div>
+      <p style={{ margin:"0 0 11px", fontSize:12.5, color:"var(--ink2)", lineHeight:1.5 }}>
+        Put in the total your phone or watch is showing. Importing a Garmin day summary
+        overwrites this with whatever Garmin has.
+      </p>
+      <input type="number" inputMode="numeric" step="100" value={val} autoFocus
+        onChange={e=>put(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()}
+        placeholder="8500"
+        style={{ fontSize:26, fontFamily:"'IBM Plex Mono',monospace", textAlign:"center", padding:"12px 6px" }} />
+
+      <div style={{ display:"flex", gap:6, marginTop:9 }}>
+        {[500, 1000, 2500, 5000].map(k => (
+          <button key={k} onClick={()=>bump(k)} className="tapfade"
+            style={{ flex:1, padding:"8px 0", borderRadius:4, fontSize:11.5, fontWeight:600,
+              border:"1px solid var(--rule)", background:"transparent", color:"var(--ink2)" }}>
+            +{k >= 1000 ? `${k/1000}k` : k}
+          </button>
+        ))}
+      </div>
+
+      <div className="mono" style={{ fontSize:11, color: n >= target ? "var(--moss)" : "var(--ink3)", marginTop:10 }}>
+        {n >= target
+          ? `${n.toLocaleString()} — target hit`
+          : `${Math.max(0, target - n).toLocaleString()} to go of ${target.toLocaleString()}`}
+      </div>
+
+      <div style={{ display:"flex", gap:7, marginTop:13 }}>
+        <Btn kind="solid" size="md" full onClick={save}>Save</Btn>
+        {D.day.steps != null && (
+          <Btn kind="ghost" size="md" onClick={()=>{ patchDay(date,{steps:null}); flash("Steps cleared"); onDone(); }}>Clear</Btn>
+        )}
+      </div>
     </div>
   );
 }
@@ -2156,7 +2226,7 @@ function Train({ ctx }) {
 
       {/* logging buttons */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-        <Btn kind="lane" size="lg" onClick={()=>setSheet("run")}>Log a run</Btn>
+        <Btn kind="lane" size="lg" onClick={()=>setSheet("run")}>Run or walk</Btn>
         <Btn kind="solid" size="lg" onClick={()=>setSheet("strength")}>Log strength</Btn>
         <Btn kind="bib" size="lg" onClick={()=>setSheet("cindy")}>Start Cindy</Btn>
         <Btn kind="ghost" size="lg" onClick={()=>setSheet("session")}>Any session</Btn>
@@ -2177,7 +2247,7 @@ function Train({ ctx }) {
               <div key={w.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 0",
                 borderBottom:"1px solid var(--rule)" }}>
                 <div style={{ width:3, alignSelf:"stretch", borderRadius:2, background:
-                  w.type==="run"?"var(--lane)":w.type==="cindy"?"var(--bib)":(w.type==="sport"||w.type==="session")?"var(--moss)":"var(--ink2)" }} />
+                  w.type==="run"?"var(--lane)":w.type==="cindy"?"var(--bib)":(w.type==="sport"||w.type==="session"||w.type==="walk")?"var(--moss)":"var(--ink2)" }} />
                 <button onClick={()=>setEditW(w)} className="tapfade" aria-label={`Edit ${w.name}`}
                   style={{ flex:1, minWidth:0, textAlign:"left", background:"transparent", padding:0 }}>
                   <div style={{ fontSize:13.5, fontWeight:600 }}>{w.name}</div>
@@ -2235,7 +2305,7 @@ function Train({ ctx }) {
         </div>
       </Card>
 
-      {sheet==="run" && <Sheet onClose={()=>setSheet(null)} title="Log a run"><RunForm ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
+      {sheet==="run" && <Sheet onClose={()=>setSheet(null)} title="Log a run or walk"><RunForm ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
       {sheet==="strength" && <Sheet onClose={()=>setSheet(null)} title="Log strength"><StrengthForm ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
       {sheet==="session" && <Sheet onClose={()=>setSheet(null)} title="Log any session"><SessionForm ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
       {sheet==="cindy" && <Sheet onClose={()=>setSheet(null)} title="Cindy — 20 min AMRAP"><Cindy ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
@@ -2244,21 +2314,62 @@ function Train({ ctx }) {
   );
 }
 
+/* Module level, same reason as NumField — a component declared inside another
+   component's render is a new type every render and gets remounted. */
+function Toggle({ opts, value, onPick, color }) {
+  return (
+    <div style={{ display:"flex", gap:6 }}>
+      {opts.map(([k,l])=>(
+        <button key={k} onClick={()=>onPick(k)} className="tapfade"
+          style={{ flex:1, padding:"7px 0", borderRadius:4, fontSize:11.5, fontWeight:600,
+            background: value===k?color:"transparent", color: value===k?"#fff":"var(--ink3)",
+            border: value===k?`1px solid ${color}`:"1px solid var(--rule)" }}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
+/* Runs and walks share this form. They are stored as different workout types on
+   purpose: weekMiles, the plan bar and the per-day dots all filter on
+   type === "run", so typing a walk as a run would quietly count walking miles
+   toward the week's running target. A treadmill run is still a run and still
+   counts — only the surface differs. */
 function RunForm({ ctx, onDone }) {
   const { addWorkout, flash, D } = ctx;
   const [m, setM] = useState(""); const [t, setT] = useState(""); const [hr, setHr] = useState("");
   const [kind, setKind] = useState("easy");
+  const [mode, setMode] = useState("run");          // run | walk
+  const [surface, setSurface] = useState("outside"); // outside | treadmill
   const pace = paceOf(+m, +t);
+  const isWalk = mode === "walk";
+
+  const baseName = isWalk ? "Walk"
+    : kind==="long" ? "Long Run" : kind==="tempo" ? "Tempo Run" : "Easy Run";
+  const name = surface==="treadmill" ? `Treadmill ${baseName}` : baseName;
+
   return (
     <div>
-      <div style={{ display:"flex", gap:6, marginBottom:12 }}>
-        {[["easy","Easy / Zone 2"],["long","Long run"],["tempo","Tempo"]].map(([k,l])=>(
-          <button key={k} onClick={()=>setKind(k)} className="tapfade"
-            style={{ flex:1, padding:"7px 0", borderRadius:4, fontSize:11.5, fontWeight:600,
-              background: kind===k?"var(--lane)":"transparent", color: kind===k?"#fff":"var(--ink3)",
-              border: kind===k?"1px solid var(--lane)":"1px solid var(--rule)" }}>{l}</button>
-        ))}
+      <div style={{ marginBottom:8 }}>
+        <Toggle opts={[["run","Run"],["walk","Walk"]]} value={mode} onPick={setMode} color="var(--ink)" />
       </div>
+      <div style={{ marginBottom:8 }}>
+        <Toggle opts={[["outside","Outside"],["treadmill","Treadmill"]]} value={surface} onPick={setSurface} color="var(--ink2)" />
+      </div>
+      {!isWalk && (
+        <div style={{ display:"flex", gap:6, marginBottom:12 }}>
+          {[["easy","Easy / Zone 2"],["long","Long run"],["tempo","Tempo"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setKind(k)} className="tapfade"
+              style={{ flex:1, padding:"7px 0", borderRadius:4, fontSize:11.5, fontWeight:600,
+                background: kind===k?"var(--lane)":"transparent", color: kind===k?"#fff":"var(--ink3)",
+                border: kind===k?"1px solid var(--lane)":"1px solid var(--rule)" }}>{l}</button>
+          ))}
+        </div>
+      )}
+      {isWalk && (
+        <div style={{ fontSize:11.5, color:"var(--ink3)", marginBottom:12, lineHeight:1.45 }}>
+          Walk miles are logged separately and don't count toward the week's running target.
+        </div>
+      )}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:9 }}>
         {[["Miles",m,setM,"4.0"],["Minutes",t,setT,"38"],["Avg HR",hr,setHr,"148"]].map(([l,v,set,ph])=>(
           <div key={l}>
@@ -2276,7 +2387,7 @@ function RunForm({ ctx, onDone }) {
               <div className="eyebrow" style={{ color:"var(--lane)" }}>Pace</div>
               <div className="dsp" style={{ fontSize:26, color:"var(--lane)", marginTop:2 }}>{fmtPace(pace)}<span className="mono" style={{ fontSize:11 }}> /mi</span></div>
             </div>
-            {hr && +hr > 165 && kind === "easy" && (
+            {hr && +hr > 165 && kind === "easy" && !isWalk && (
               <div style={{ fontSize:11, color:"var(--warn)", textAlign:"right", maxWidth:170, lineHeight:1.4 }}>
                 {hr} bpm is above Zone 2. The plan wants 80% of miles conversational — slow this one down next time.
               </div>
@@ -2285,8 +2396,11 @@ function RunForm({ ctx, onDone }) {
         </div>
       )}
       <Btn kind="lane" size="lg" full style={{ marginTop:13 }} disabled={!m}
-        onClick={()=>{ addWorkout({ type:"run", name: kind==="long"?"Long Run":kind==="tempo"?"Tempo Run":"Easy Run",
-          miles:+m, minutes:+t||null, hr:+hr||null, kind }); flash(`${m} mi logged`); onDone(); }}>
+        onClick={()=>{
+          addWorkout({ type: isWalk ? "walk" : "run", name,
+            miles:+m, minutes:+t||null, hr:+hr||null,
+            kind: isWalk ? null : kind, surface });
+          flash(`${m} mi ${isWalk ? "walked" : "logged"}`); onDone(); }}>
         Log {m||"—"} miles
       </Btn>
     </div>
