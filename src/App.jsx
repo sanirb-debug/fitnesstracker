@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip,
   BarChart, Bar, ReferenceLine, Area, AreaChart, CartesianGrid
@@ -775,6 +776,14 @@ export default function App() {
     });
   }, [update, date]);
 
+  const updateFood = useCallback((id, patch, d = date) => {
+    update(s => {
+      const day = s.days[d]; if (!day) return s;
+      day.food = day.food.map(f => f.id === id ? { ...f, ...patch } : f);
+      return s;
+    });
+  }, [update, date]);
+
   const addWorkout = useCallback((w, d = date) => {
     update(s => {
       const day = { ...BLANK_DAY(), ...(s.days[d]||{}) };
@@ -788,7 +797,7 @@ export default function App() {
     update(s => { const day = s.days[d]; if (day) day.workouts = day.workouts.filter(w=>w.id!==id); return s; });
   }, [update, date]);
 
-  const ctx = { state, update, patchDay, addFood, removeFood, addWorkout, removeWorkout,
+  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout,
     date, setDate, D, flash, setTab, setState, saveStatus, storageOK, flush };
 
   if (!ready) return (
@@ -1653,6 +1662,7 @@ function Food({ ctx }) {
   const [mode, setMode] = useState(null);      // "library" | "describe" | "manual"
   const [slot, setSlot] = useState("breakfast");
   const [q, setQ] = useState("");
+  const [edit, setEdit] = useState(null);      // the logged item being edited
 
   const bySlot = (s) => D.day.food.filter(f => (f.slot||"snack") === s);
   const openAdd = (s) => { setSlot(s); setMode("library"); setQ(""); };
@@ -1713,14 +1723,16 @@ function Food({ ctx }) {
                   {items.map(f => (
                     <div key={f.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0",
                       borderBottom:"1px solid var(--rule)" }}>
-                      <div style={{ flex:1, minWidth:0 }}>
+                      <button onClick={()=>setEdit(f)} className="tapfade" aria-label={`Edit ${f.name}`}
+                        style={{ flex:1, minWidth:0, textAlign:"left", background:"transparent", padding:0 }}>
                         <div style={{ fontSize:13, fontWeight:500, lineHeight:1.3 }}>{f.name}</div>
                         <div className="mono" style={{ fontSize:10, color:"var(--ink3)", marginTop:2 }}>
+                          {f.qty > 0 && f.unit ? `${+(+f.qty).toFixed(2)} ${f.unit} · ` : ""}
                           {Math.round(f.calories)} cal · {Math.round(f.protein)}p · {Math.round(f.carbs)}c · {Math.round(f.fat)}f
                           {f.estimated && <span style={{ color:"var(--bib)" }}> · est</span>}
                           {f.party && <span style={{ color:"var(--lane)" }}> · free</span>}
                         </div>
-                      </div>
+                      </button>
                       <button onClick={()=>removeFood(f.id)} className="tapfade" aria-label={`Remove ${f.name}`}
                         style={{ color:"var(--ink3)", fontSize:16, padding:"2px 4px" }}>×</button>
                     </div>
@@ -1743,6 +1755,12 @@ function Food({ ctx }) {
           {mode==="manual" && <Manual slot={slot} setSlot={setSlot} ctx={ctx} onDone={()=>setMode(null)} />}
         </Sheet>
       )}
+
+      {edit && (
+        <Sheet onClose={()=>setEdit(null)} title="Edit meal">
+          <EditFood item={edit} ctx={ctx} onDone={()=>setEdit(null)} />
+        </Sheet>
+      )}
     </div>
   );
 }
@@ -1753,7 +1771,19 @@ function Sheet({ children, onClose, title }) {
     window.addEventListener("keydown", esc);
     return () => window.removeEventListener("keydown", esc);
   }, [onClose]);
-  return (
+  /* Portalled to <body> deliberately. Each tab renders inside a .rise wrapper,
+     and hcrise finishes on an identity matrix rather than transform:none — which
+     is still enough to make that wrapper the containing block for position:fixed
+     children. Rendered in place, the overlay sizes itself to the tab instead of
+     the viewport and hangs off the bottom of the screen, cutting off whatever
+     sits last in the sheet. Don't inline this back. */
+  return createPortal(
+    /* The .hc class carries every design token (--card, --ink, --rule) and the
+       `.hc input` rules, and it lives on the app root — which we've just escaped
+       by portalling to <body>. Re-apply it here or the sheet renders unstyled.
+       Its own page-level layout (full-height flow background, safe-area padding)
+       is zeroed out; the overlay inside is position:fixed and does the painting. */
+    <div className="hc" style={{ minHeight:0, background:"transparent", paddingTop:0 }}>
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(22,32,43,.42)",
       zIndex:70, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
       <div onClick={e=>e.stopPropagation()} className="rise"
@@ -1767,6 +1797,8 @@ function Sheet({ children, onClose, title }) {
         {children}
       </div>
     </div>
+    </div>,
+    document.body
   );
 }
 
@@ -1914,6 +1946,149 @@ function Manual({ slot, setSlot, ctx, onDone }) {
         <Btn kind="solid" size="md" onClick={()=>submit(false)} disabled={!ok} full>Log it</Btn>
         <Btn kind="ghost" size="md" onClick={()=>submit(true)} disabled={!ok}>Log + save ★</Btn>
       </div>
+    </div>
+  );
+}
+
+const UNITS = ["cup", "oz", "g", "tbsp", "piece", "serving"];
+
+/* Edit a meal that's already logged: rename it, set the portion, override any
+   macro, move it to another slot.
+
+   Amount and macros are linked through `per` — the macros for one unit. Typing
+   an amount rescales from that baseline (2 cups = twice 1 cup), and typing a
+   macro rewrites the baseline so the next amount change stays consistent.
+   Round-tripping 1 → 3 → 1 lands back where it started, which a
+   multiply-in-place approach doesn't. */
+function EditFood({ item, ctx, onDone }) {
+  const { updateFood, removeFood, update, flash } = ctx;
+  const [name, setName] = useState(item.name);
+  const [slot, setSlot] = useState(item.slot || "snack");
+  const [qty, setQty] = useState(item.qty > 0 ? String(item.qty) : "1");
+  const [unit, setUnit] = useState(item.unit || "");
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [m, setM] = useState({
+    calories: Math.round(item.calories || 0), protein: Math.round(item.protein || 0),
+    carbs: Math.round(item.carbs || 0), fat: Math.round(item.fat || 0),
+  });
+  /* qty and per drive the arithmetic, so they live in refs and are written
+     synchronously. Reading them from state instead would make two taps of + in
+     the same tick both scale from the same stale value — 1 → 1.5 → 1.5. */
+  const qtyRef = useRef(item.qty > 0 ? String(item.qty) : "1");
+  const perRef = useRef(null);
+  if (perRef.current === null) {
+    const q = +item.qty > 0 ? +item.qty : 1;
+    perRef.current = { calories:(item.calories||0)/q, protein:(item.protein||0)/q,
+      carbs:(item.carbs||0)/q, fat:(item.fat||0)/q };
+  }
+
+  const applyQty = (v) => {
+    qtyRef.current = v;
+    setQty(v);
+    const q = +v, per = perRef.current;
+    if (q > 0) setM({ calories:Math.round(per.calories*q), protein:Math.round(per.protein*q),
+      carbs:Math.round(per.carbs*q), fat:Math.round(per.fat*q) });
+  };
+  const step = (delta) => {
+    const next = Math.max(0.5, Math.round(((+qtyRef.current || 1) + delta) * 2) / 2);
+    applyQty(String(next));
+  };
+  const setMacro = (k, v) => {
+    setM(p => ({ ...p, [k]:v }));
+    const q = +qtyRef.current > 0 ? +qtyRef.current : 1;
+    perRef.current = { ...perRef.current, [k]:(+v || 0) / q };
+  };
+
+  const ok = name.trim() !== "";
+  const save = (alsoLibrary) => {
+    const patch = {
+      name: name.trim(), slot,
+      calories:+m.calories||0, protein:+m.protein||0, carbs:+m.carbs||0, fat:+m.fat||0,
+      qty: +qty > 0 ? +qty : null,
+      unit: unit.trim() || null,
+    };
+    updateFood(item.id, patch);
+    if (alsoLibrary) update(s => {
+      s.customFoods = [...s.customFoods.filter(x => x.name !== patch.name), { ...patch }];
+      return s;
+    });
+    flash(alsoLibrary ? "Updated and saved to your library" : "Meal updated");
+    onDone();
+  };
+
+  return (
+    <div>
+      <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="What is it?" />
+
+      <div style={{ marginTop:13 }}><Eyebrow>How much</Eyebrow></div>
+      <div style={{ display:"flex", alignItems:"center", gap:7, marginTop:7 }}>
+        <button onClick={()=>step(-0.5)} className="tapfade" aria-label="Less"
+          style={{ width:38, padding:"9px 0", border:"1px solid var(--rule)", borderRadius:4,
+            fontSize:16, fontWeight:600, background:"transparent" }}>−</button>
+        <input type="number" inputMode="decimal" step="0.5" min="0" value={qty}
+          onChange={e=>applyQty(e.target.value)}
+          style={{ width:64, textAlign:"center", fontFamily:"'IBM Plex Mono',monospace", padding:"8px 4px" }} />
+        <button onClick={()=>step(0.5)} className="tapfade" aria-label="More"
+          style={{ width:38, padding:"9px 0", border:"1px solid var(--rule)", borderRadius:4,
+            fontSize:16, fontWeight:600, background:"transparent" }}>+</button>
+        <input type="text" value={unit} onChange={e=>setUnit(e.target.value)} placeholder="cups, oz, g…"
+          style={{ flex:1, padding:"8px 10px" }} />
+      </div>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginTop:7 }}>
+        {UNITS.map(u => (
+          <button key={u} onClick={()=>setUnit(unit===u ? "" : u)} className="tapfade"
+            style={{ padding:"5px 10px", borderRadius:4, fontSize:11, fontWeight:600,
+              background: unit===u ? "var(--ink)" : "transparent",
+              color: unit===u ? "#FCFCFA" : "var(--ink3)",
+              border: unit===u ? "1px solid var(--ink)" : "1px solid var(--rule)" }}>{u}</button>
+        ))}
+      </div>
+      <div style={{ fontSize:11.5, color:"var(--ink3)", marginTop:8, lineHeight:1.45 }}>
+        Changing the amount scales the macros below. Type over any number to set it yourself.
+      </div>
+
+      <div style={{ marginTop:14 }}><Eyebrow>Macros</Eyebrow></div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:7, marginTop:7 }}>
+        {[["calories","cal"],["protein","P"],["carbs","C"],["fat","F"]].map(([k,l])=>(
+          <div key={k}>
+            <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>{l}</div>
+            <input type="number" inputMode="numeric" value={m[k]} onChange={e=>setMacro(k, e.target.value)}
+              style={{ fontFamily:"'IBM Plex Mono',monospace", padding:"8px 6px", textAlign:"center" }} />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop:14 }}><Eyebrow>Meal</Eyebrow></div>
+      <div style={{ display:"flex", gap:5, marginTop:7 }}>
+        {MEAL_SLOTS.map(s => (
+          <button key={s} onClick={()=>setSlot(s)} className="tapfade"
+            style={{ flex:1, padding:"6px 0", borderRadius:4, fontSize:11, fontWeight:600,
+              background: slot===s?"var(--ink)":"transparent", color: slot===s?"#FCFCFA":"var(--ink3)",
+              border: slot===s?"1px solid var(--ink)":"1px solid var(--rule)" }}>
+            {SLOT_LABEL[s].split(" ")[0]}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display:"flex", gap:7, marginTop:15 }}>
+        <Btn kind="solid" size="md" onClick={()=>save(false)} disabled={!ok} full>Save</Btn>
+        <Btn kind="ghost" size="md" onClick={()=>save(true)} disabled={!ok}>Save + ★</Btn>
+      </div>
+
+      {confirmDel ? (
+        <div style={{ marginTop:13, padding:11, border:"1px solid var(--warn)", borderRadius:5 }}>
+          <div style={{ fontSize:12.5, color:"var(--ink2)" }}>Remove this from today's log?</div>
+          <div style={{ display:"flex", gap:7, marginTop:9 }}>
+            <Btn kind="quiet" size="sm" full onClick={()=>setConfirmDel(false)}>Keep it</Btn>
+            <Btn kind="bib" size="sm" full onClick={()=>{ removeFood(item.id); flash("Removed"); onDone(); }}>Remove</Btn>
+          </div>
+        </div>
+      ) : (
+        <button className="tapfade" onClick={()=>setConfirmDel(true)}
+          style={{ marginTop:13, fontSize:11.5, color:"var(--ink3)", textDecoration:"underline", display:"block" }}>
+          Remove from log
+        </button>
+      )}
     </div>
   );
 }

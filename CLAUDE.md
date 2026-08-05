@@ -107,6 +107,21 @@ file. `.gitignore` covers `node_modules/`, `.env*`, `.DS_Store`.
 **Preserve the iPhone safe-area CSS.** The `.hc` / `.hcnav` / `.hcpad` rules and
 `env(safe-area-inset-*)` keep the bottom nav off the home bar in standalone mode.
 
+**`Sheet` must stay portalled to `<body>`, wrapped in a `.hc` host.** Two traps,
+both silent:
+
+- Each tab renders inside a `.rise` wrapper, and the `hcrise` animation settles on
+  an *identity matrix* rather than `transform:none`. That is still enough to make
+  the wrapper the containing block for `position:fixed` children — so a sheet
+  rendered in place sizes itself to the tab, not the viewport, and hangs off the
+  bottom of the screen with its last controls cut off.
+- Portalling to `<body>` escapes the app root, where every design token
+  (`--card`, `--ink`, `--rule`) and the `.hc input` rules live. Without a
+  `className="hc"` wrapper on the portal, the sheet renders completely unstyled.
+
+The wrapper zeroes `.hc`'s own page layout (`minHeight`, `background`,
+`paddingTop`) so it paints nothing itself.
+
 ## Verification gates
 
 Don't call a change done until these pass:
