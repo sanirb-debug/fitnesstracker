@@ -122,6 +122,24 @@ both silent:
 The wrapper zeroes `.hc`'s own page layout (`minHeight`, `background`,
 `paddingTop`) so it paints nothing itself.
 
+**`calTarget` is derived from burn — editing burn edits the diet.**
+`calTarget = max(1700, round((burn - deficit)/25)*25)`. `day.burnKind` decides how
+`day.burn` becomes that burn:
+
+| `burnKind` | burn | means |
+|---|---|---|
+| `total` | the number as-is | whole-day total from a watch |
+| `active` | `formulaBurn*0.62 + n` | a whole day's *active* calories; `*0.62` backs the 1.55 activity factor out of the estimate, leaving ≈BMR |
+| `extra` | `formulaBurn + n` | work beyond a normal day |
+
+**`formulaBurn` already includes an activity factor of 1.55** — the plan's usual
+training is baked in. So "log one workout's calories" is not a safe input: as
+`total` it collapses the target to the 1700 floor, and as `active` it *lowers*
+the target, because one workout is far less than a full day's active burn. That
+is why `extra` exists and why the sheet warns about eating the same calories
+back twice. Any change here should keep the live target readout — it's what makes
+a wrong mode visible before it's saved.
+
 **Walks are `type:"walk"`, not `type:"run"`.** `weekMiles`, the plan bar, the
 per-day dots and the stats totals all filter on `type === "run"`, so a walk typed
 as a run silently counts walking miles toward the week's running target. A

@@ -604,8 +604,18 @@ function useDerived(state, date) {
     const formulaBurn = estimateBurn(P, latest);
     let burn = formulaBurn, burnSource = "estimate";
     if (typeof day.burn === "number" && day.burn > 0) {
-      burn = day.burnKind === "active" ? Math.round(formulaBurn * 0.62 + day.burn) : day.burn;
-      burnSource = day.burnKind === "active" ? "garmin+bmr" : "garmin";
+      /* three ways to say what today cost:
+         total  — the whole day, replaces the estimate outright
+         active — a whole day's *active* calories; resting burn is added under it
+                  (formulaBurn * 0.62 ≈ BMR once the 1.55 activity factor is out)
+         extra  — work beyond a normal day, added on top of the estimate */
+      burn = day.burnKind === "active" ? Math.round(formulaBurn * 0.62 + day.burn)
+           : day.burnKind === "extra"  ? Math.round(formulaBurn + day.burn)
+           : day.burn;
+      // Days logged before burnFrom existed came from Garmin, so that's the default.
+      const from = day.burnFrom === "manual" ? "manual" : "garmin";
+      burnSource = day.burnKind === "active" ? `${from}+bmr`
+                 : day.burnKind === "extra" ? `${from}+extra` : from;
     }
     const calTarget = Math.max(1700, Math.round((burn - P.deficit) / 25) * 25);
 
@@ -1018,6 +1028,7 @@ function Today({ ctx }) {
   const { D, date, patchDay, addFood, flash, setTab, state } = ctx;
   const [swapOpen, setSwapOpen] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
+  const [burnOpen, setBurnOpen] = useState(false);
   const sched = DAY_TEMPLATE[dow(date)];
   const left = D.calTarget - D.cal;
   const free = D.day.free;
@@ -1069,7 +1080,7 @@ function Today({ ctx }) {
           <MiniStat label="Carbs" val={`${Math.round(D.carb)}g`} />
           <MiniStat label="Fat" val={`${Math.round(D.fat)}g`} />
           <MiniStat label="Burn" val={D.burn.toLocaleString()}
-            hint={D.burnSource === "estimate" ? "estimated" : "from Garmin"} />
+            hint={burnLabel(D.burnSource)} onClick={()=>setBurnOpen(true)} />
           <MiniStat label="Streak" val={`${D.streak}d`} hint="protein hit" />
         </div>
       </Card>
@@ -1171,6 +1182,12 @@ function Today({ ctx }) {
           <StepsForm ctx={ctx} onDone={()=>setStepsOpen(false)} />
         </Sheet>
       )}
+
+      {burnOpen && (
+        <Sheet onClose={()=>setBurnOpen(false)} title="Calories burned">
+          <BurnForm ctx={ctx} onDone={()=>setBurnOpen(false)} />
+        </Sheet>
+      )}
     </div>
   );
 }
@@ -1229,6 +1246,104 @@ function StepsForm({ ctx, onDone }) {
         {D.day.steps != null && (
           <Btn kind="ghost" size="md" onClick={()=>{ patchDay(date,{steps:null}); flash("Steps cleared"); onDone(); }}>Clear</Btn>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- calories burned, and what it does to today's target ---------- */
+
+/* Your eating target is derived: calTarget = burn − deficit. So this sheet is
+   really a target editor, and the total-vs-workout distinction decides whether
+   the number entered replaces the whole day's burn or gets added on top of a
+   resting baseline. Mixing those up is the dangerous case — entering a 500 cal
+   run as a whole-day total collapses the target to the 1700 floor. Hence the
+   live target readout and the sanity warning: both make a wrong pick visible
+   before it's saved. */
+function BurnForm({ ctx, onDone }) {
+  const { D, date, patchDay, flash } = ctx;
+  const [kind, setKind] = useState(D.day.burnKind || "total");
+  const [val, setVal] = useState(D.day.burn != null ? String(D.day.burn) : "");
+
+  const n = Math.round(+val || 0);
+  const effBurn = kind === "active" ? Math.round(D.formulaBurn * 0.62 + n)
+                : kind === "extra"  ? Math.round(D.formulaBurn + n)
+                : n;
+  const newTarget = Math.max(1700, Math.round((effBurn - D.P.deficit) / 25) * 25);
+  const usualTarget = Math.max(1700, Math.round((D.formulaBurn - D.P.deficit) / 25) * 25);
+  const delta = newTarget - usualTarget;
+
+  // A whole-day total below roughly half the estimate isn't a whole day; a
+  // whole day's active calories don't run to four figures of this size.
+  const looksLikeWorkout = kind === "total" && n > 0 && n < D.formulaBurn * 0.5;
+  const looksLikeWholeDay = kind === "active" && n > 2500;
+
+  const save = () => {
+    if (val.trim() === "") { patchDay(date, { burn:null, burnFrom:null }); flash("Back to the estimate"); onDone(); return; }
+    if (n <= 0 || n > 12000) { flash("That doesn't look like a calorie burn", "err"); return; }
+    patchDay(date, { burn:n, burnKind:kind, burnFrom:"manual" });
+    flash(`Burn set — eat ${newTarget.toLocaleString()} today`);
+    onDone();
+  };
+
+  return (
+    <div>
+      <Toggle color="var(--ink)" value={kind} onPick={setKind}
+        opts={[["total","Whole day"],["active","Active only"],["extra","Extra today"]]} />
+      <p style={{ margin:"9px 0 11px", fontSize:12, color:"var(--ink2)", lineHeight:1.5 }}>
+        {kind === "total"
+          ? "The total your watch shows for the whole day, resting burn included. Replaces the estimate."
+          : kind === "active"
+          ? "Your watch's active calories for the whole day — not one workout. Resting burn is added underneath."
+          : "Work that went beyond a normal day for you. Added on top of the estimate."}
+      </p>
+
+      {kind === "extra" && (
+        <div style={{ margin:"0 0 11px", padding:"10px 12px", background:"rgba(30,111,217,.07)",
+          borderRadius:5, fontSize:11.5, color:"var(--ink2)", lineHeight:1.45 }}>
+          Your {D.formulaBurn.toLocaleString()} estimate already assumes the training in your plan —
+          the runs, Cindy, court sports. Only put a number here for work that went <em>beyond</em> a
+          normal day, or you'll be eating the same calories back twice.
+        </div>
+      )}
+
+      <input type="number" inputMode="numeric" step="10" value={val} autoFocus
+        onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()}
+        placeholder={kind === "total" ? String(D.formulaBurn) : kind === "active" ? "900" : "400"}
+        style={{ fontSize:26, fontFamily:"'IBM Plex Mono',monospace", textAlign:"center", padding:"12px 6px" }} />
+
+      {n > 0 && (
+        <div className="rise" style={{ marginTop:11, padding:"12px 13px", borderRadius:5,
+          background: delta >= 0 ? "rgba(76,140,74,.09)" : "rgba(198,65,58,.08)" }}>
+          <div className="eyebrow" style={{ color: delta >= 0 ? "var(--moss)" : "var(--warn)" }}>Eat today</div>
+          <div className="dsp" style={{ fontSize:30, marginTop:2,
+            color: delta >= 0 ? "var(--moss)" : "var(--warn)" }}>{newTarget.toLocaleString()}</div>
+          <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)", marginTop:3 }}>
+            {delta === 0 ? "same as your usual day"
+              : `${delta > 0 ? "+" : ""}${delta.toLocaleString()} vs your usual ${usualTarget.toLocaleString()}`}
+            {kind !== "total" && ` · ${effBurn.toLocaleString()} total burn`}
+          </div>
+        </div>
+      )}
+
+      {(looksLikeWorkout || looksLikeWholeDay) && (
+        <div style={{ marginTop:10, padding:"10px 12px", border:"1px solid var(--warn)", borderRadius:5,
+          fontSize:12, color:"var(--ink2)", lineHeight:1.45 }}>
+          {looksLikeWorkout
+            ? <>That looks like a single workout, not a whole day — a whole day for you is around {D.formulaBurn.toLocaleString()}. Switch to <strong>Just the workout</strong> or your target drops to {newTarget.toLocaleString()}.</>
+            : <>That looks like a whole-day total, not one workout. Switch to <strong>Whole day</strong>, or your target jumps to {newTarget.toLocaleString()}.</>}
+        </div>
+      )}
+
+      <div style={{ display:"flex", gap:7, marginTop:13 }}>
+        <Btn kind="solid" size="md" full onClick={save} disabled={val.trim() !== "" && n <= 0}>Save</Btn>
+        {D.day.burn != null && (
+          <Btn kind="ghost" size="md" onClick={()=>{ patchDay(date,{burn:null, burnFrom:null}); flash("Back to the estimate"); onDone(); }}>Reset</Btn>
+        )}
+      </div>
+      <div className="mono" style={{ fontSize:9.5, color:"var(--ink3)", marginTop:9, lineHeight:1.5 }}>
+        Without a number here the app estimates {D.formulaBurn.toLocaleString()} for you.
+        Importing a Garmin summary overwrites whatever you set.
       </div>
     </div>
   );
@@ -1478,13 +1593,30 @@ function WeekBudget({ ctx }) {
   );
 }
 
-const MiniStat = ({ label, val, hint }) => (
-  <div style={{ flex:1, minWidth:0 }}>
-    <div className="eyebrow" style={{ fontSize:8.5 }}>{label}</div>
-    <div className="mono" style={{ fontSize:14, fontWeight:600, marginTop:2 }}>{val}</div>
-    {hint && <div className="mono" style={{ fontSize:8.5, color:"var(--ink3)", marginTop:1 }}>{hint}</div>}
-  </div>
-);
+const MiniStat = ({ label, val, hint, onClick }) => {
+  const inner = (
+    <>
+      <div className="eyebrow" style={{ fontSize:8.5 }}>{label}</div>
+      <div className="mono" style={{ fontSize:14, fontWeight:600, marginTop:2 }}>{val}</div>
+      {hint && <div className="mono" style={{ fontSize:8.5, color:"var(--ink3)", marginTop:1 }}>{hint}</div>}
+    </>
+  );
+  return onClick
+    ? <button onClick={onClick} className="tapfade" aria-label={`Set ${label.toLowerCase()}`}
+        style={{ flex:1, minWidth:0, textAlign:"left", background:"transparent", padding:0 }}>{inner}</button>
+    : <div style={{ flex:1, minWidth:0 }}>{inner}</div>;
+};
+
+/* "estimated" / "from Garmin" / "set by you" — the +bmr variants mean the number
+   entered was workout-only and the resting baseline was added on top. */
+const burnLabel = (src) =>
+  src === "estimate" ? "estimated"
+  : src === "manual" ? "set by you"
+  : src === "manual+bmr" ? "active, set by you"
+  : src === "manual+extra" ? "estimate + extra"
+  : src === "garmin+bmr" ? "active, from Garmin"
+  : src === "garmin+extra" ? "estimate + extra"
+  : "from Garmin";
 
 const RunChip = ({ miles }) => (
   <div style={{ border:"1px solid var(--lane)", borderRadius:3, padding:"4px 8px 5px", textAlign:"center", flexShrink:0 }}>
@@ -1552,8 +1684,8 @@ function GarminCard({ ctx }) {
   const apply = () => {
     const r = result;
     const patch = {};
-    if (r.totalCalories) { patch.burn = r.totalCalories; patch.burnKind = "total"; }
-    else if (r.activeCalories) { patch.burn = r.activeCalories; patch.burnKind = "active"; }
+    if (r.totalCalories) { patch.burn = r.totalCalories; patch.burnKind = "total"; patch.burnFrom = "garmin"; }
+    else if (r.activeCalories) { patch.burn = r.activeCalories; patch.burnKind = "active"; patch.burnFrom = "garmin"; }
     if (r.steps) patch.steps = r.steps;
     patch.garmin = { ...r, importedAt: Date.now() };
     patchDay(date, patch);
@@ -1612,7 +1744,7 @@ function GarminCard({ ctx }) {
               <div style={{ display:"flex", gap:8, marginTop:10 }}>
                 <Btn kind="solid" size="sm" full disabled={!mBurn && !mSteps} onClick={()=>{
                   const patch = {};
-                  if (+mBurn > 0) { patch.burn = +mBurn; patch.burnKind = "total"; }
+                  if (+mBurn > 0) { patch.burn = +mBurn; patch.burnKind = "total"; patch.burnFrom = "garmin"; }
                   if (+mSteps > 0) patch.steps = +mSteps;
                   patchDay(date, patch); setManual(false); setMBurn(""); setMSteps(""); flash("Saved");
                 }}>Save</Btn>
