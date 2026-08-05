@@ -797,7 +797,15 @@ export default function App() {
     update(s => { const day = s.days[d]; if (day) day.workouts = day.workouts.filter(w=>w.id!==id); return s; });
   }, [update, date]);
 
-  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout,
+  const updateWorkout = useCallback((id, patch, d = date) => {
+    update(s => {
+      const day = s.days[d]; if (!day) return s;
+      day.workouts = day.workouts.map(w => w.id === id ? { ...w, ...patch } : w);
+      return s;
+    });
+  }, [update, date]);
+
+  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout, updateWorkout,
     date, setDate, D, flash, setTab, setState, saveStatus, storageOK, flush };
 
   if (!ready) return (
@@ -2100,6 +2108,7 @@ function EditFood({ item, ctx, onDone }) {
 function Train({ ctx }) {
   const { D, date, addWorkout, removeWorkout, flash, state } = ctx;
   const [sheet, setSheet] = useState(null);
+  const [editW, setEditW] = useState(null);   // the logged workout being edited
   const sched = DAY_TEMPLATE[dow(date)];
   const milePct = D.weekTarget ? (D.weekMiles / D.weekTarget) * 100 : 0;
 
@@ -2169,7 +2178,8 @@ function Train({ ctx }) {
                 borderBottom:"1px solid var(--rule)" }}>
                 <div style={{ width:3, alignSelf:"stretch", borderRadius:2, background:
                   w.type==="run"?"var(--lane)":w.type==="cindy"?"var(--bib)":(w.type==="sport"||w.type==="session")?"var(--moss)":"var(--ink2)" }} />
-                <div style={{ flex:1, minWidth:0 }}>
+                <button onClick={()=>setEditW(w)} className="tapfade" aria-label={`Edit ${w.name}`}
+                  style={{ flex:1, minWidth:0, textAlign:"left", background:"transparent", padding:0 }}>
                   <div style={{ fontSize:13.5, fontWeight:600 }}>{w.name}</div>
                   <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)", marginTop:2 }}>
                     {w.miles ? `${round(w.miles,2)} mi · ` : ""}
@@ -2180,7 +2190,7 @@ function Train({ ctx }) {
                     {w.calories && w.type==="session" ? `~${w.calories} cal · ` : ""}
                     {w.source==="garmin" ? "garmin" : "manual"}
                   </div>
-                </div>
+                </button>
                 <button onClick={()=>removeWorkout(w.id)} className="tapfade" aria-label={`Remove ${w.name}`}
                   style={{ color:"var(--ink3)", fontSize:16, padding:"2px 4px" }}>×</button>
               </div>
@@ -2229,6 +2239,7 @@ function Train({ ctx }) {
       {sheet==="strength" && <Sheet onClose={()=>setSheet(null)} title="Log strength"><StrengthForm ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
       {sheet==="session" && <Sheet onClose={()=>setSheet(null)} title="Log any session"><SessionForm ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
       {sheet==="cindy" && <Sheet onClose={()=>setSheet(null)} title="Cindy — 20 min AMRAP"><Cindy ctx={ctx} onDone={()=>setSheet(null)} /></Sheet>}
+      {editW && <Sheet onClose={()=>setEditW(null)} title="Edit workout"><EditWorkout item={editW} ctx={ctx} onDone={()=>setEditW(null)} /></Sheet>}
     </div>
   );
 }
@@ -2531,6 +2542,128 @@ function Cindy({ ctx, onDone }) {
       <div className="mono" style={{ fontSize:10, color:"var(--ink3)", marginTop:12, lineHeight:1.5 }}>
         Keep this screen open. Tap the block every time you finish 15 squats.
       </div>
+    </div>
+  );
+}
+
+/* Edit a workout that's already logged.
+
+   Which fields show depends on what the workout actually is — a run gets
+   distance, a Cindy gets rounds and partial reps, and anything that already
+   carries a note keeps it. Nothing is invented: a field appears only when the
+   type uses it or the workout already has a value for it, so the sheet never
+   offers to set a number the log has no way to display.
+
+   Blank saves back as null, not 0. The row renders each stat behind a
+   truthiness check, so a 0 would print "0 mi ·" where the field should just
+   disappear. */
+/* Module level on purpose. Declared inside EditWorkout it would be a new
+   component type on every render, so React would unmount and remount the input
+   on each keystroke — the field loses focus and the phone keyboard closes after
+   a single character. */
+function NumField({ label, value, onChange, step, hint }) {
+  return (
+    <div>
+      <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>{label}</div>
+      <input type="number" inputMode="decimal" step={step||"1"} value={value}
+        onChange={e=>onChange(e.target.value)} placeholder="—"
+        style={{ fontFamily:"'IBM Plex Mono',monospace", padding:"8px 6px", textAlign:"center", width:"100%" }} />
+      {hint && <div className="mono" style={{ fontSize:9, color:"var(--ink3)", marginTop:3, textAlign:"center" }}>{hint}</div>}
+    </div>
+  );
+}
+
+function EditWorkout({ item, ctx, onDone }) {
+  const { updateWorkout, removeWorkout, flash } = ctx;
+  const [name, setName] = useState(item.name || "");
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [f, setF] = useState({
+    miles: item.miles ?? "", minutes: item.minutes ?? "", hr: item.hr ?? "",
+    calories: item.calories ?? "", rounds: item.rounds ?? "", reps: item.reps ?? "",
+    note: item.note ?? "",
+  });
+  const set = (k, v) => setF(p => ({ ...p, [k]:v }));
+
+  const isRun = item.type === "run" || item.type === "sport" || item.miles != null;
+  const isCindy = item.type === "cindy" || item.rounds != null;
+  const hasNote = item.note != null;
+
+  const pace = (+f.miles > 0 && +f.minutes > 0) ? fmtPace(paceOf(+f.miles, +f.minutes)) : null;
+
+  const num = (v, p) => v === "" || v == null ? null : round(+v, p);
+  const save = () => {
+    const patch = { name: name.trim() || item.name, minutes: num(f.minutes, 1),
+      hr: num(f.hr, 0), calories: num(f.calories, 0) };
+    if (isRun) patch.miles = num(f.miles, 2);
+    if (isCindy) { patch.rounds = num(f.rounds, 0); patch.reps = num(f.reps, 0) ?? 0; }
+    if (hasNote) patch.note = f.note.trim() || null;
+    updateWorkout(item.id, patch);
+    flash("Workout updated");
+    onDone();
+  };
+
+  const Num = (k, label, step, hint) => (
+    <NumField label={label} value={f[k]} onChange={v=>set(k,v)} step={step} hint={hint} />
+  );
+
+  return (
+    <div>
+      <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="What was it?" />
+
+      {isRun && (
+        <>
+          <div style={{ marginTop:13 }}><Eyebrow>Distance & time</Eyebrow></div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7, marginTop:7 }}>
+            {Num("miles","miles","0.01")}
+            {Num("minutes","minutes","0.5")}
+          </div>
+          <div className="mono" style={{ fontSize:11, color: pace ? "var(--lane)" : "var(--ink3)", marginTop:8 }}>
+            {pace ? `${pace} /mi` : "Fill both to see your pace"}
+          </div>
+        </>
+      )}
+
+      {isCindy && (
+        <>
+          <div style={{ marginTop:13 }}><Eyebrow>Score</Eyebrow></div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7, marginTop:7 }}>
+            {Num("rounds","rounds")}
+            {Num("reps","+ reps",null,"partial round")}
+          </div>
+        </>
+      )}
+
+      <div style={{ marginTop:13 }}><Eyebrow>{isRun || isCindy ? "Also" : "Effort"}</Eyebrow></div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:7, marginTop:7 }}>
+        {!isRun && Num("minutes","minutes","0.5")}
+        {Num("hr","avg bpm")}
+        {Num("calories","calories","5")}
+      </div>
+
+      {hasNote && (
+        <>
+          <div style={{ marginTop:13 }}><Eyebrow>Note</Eyebrow></div>
+          <textarea rows={2} value={f.note} onChange={e=>set("note", e.target.value)}
+            style={{ marginTop:7 }} placeholder="How did it feel?" />
+        </>
+      )}
+
+      <Btn kind="solid" size="md" full style={{ marginTop:15 }} onClick={save}>Save</Btn>
+
+      {confirmDel ? (
+        <div style={{ marginTop:13, padding:11, border:"1px solid var(--warn)", borderRadius:5 }}>
+          <div style={{ fontSize:12.5, color:"var(--ink2)" }}>Remove this workout from the log?</div>
+          <div style={{ display:"flex", gap:7, marginTop:9 }}>
+            <Btn kind="quiet" size="sm" full onClick={()=>setConfirmDel(false)}>Keep it</Btn>
+            <Btn kind="bib" size="sm" full onClick={()=>{ removeWorkout(item.id); flash("Removed"); onDone(); }}>Remove</Btn>
+          </div>
+        </div>
+      ) : (
+        <button className="tapfade" onClick={()=>setConfirmDel(true)}
+          style={{ marginTop:13, fontSize:11.5, color:"var(--ink3)", textDecoration:"underline", display:"block" }}>
+          Remove from log
+        </button>
+      )}
     </div>
   );
 }

@@ -122,6 +122,14 @@ both silent:
 The wrapper zeroes `.hc`'s own page layout (`minHeight`, `background`,
 `paddingTop`) so it paints nothing itself.
 
+**Never declare a component inside another component's render.** `NumField` sits
+at module level for this reason. Declared inside `EditWorkout` it becomes a new
+component type on every render, so React unmounts and remounts the input on each
+keystroke — the field loses focus and the phone keyboard closes after one
+character, and values typed into a stale node are silently dropped. Build helpers
+from plain functions returning JSX (as `EditWorkout`'s `Num()` does) or hoist
+them out.
+
 ## Verification gates
 
 Don't call a change done until these pass:
