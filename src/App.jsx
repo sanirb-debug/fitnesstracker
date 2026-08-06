@@ -232,6 +232,42 @@ function dayBurn(day, formulaBurn) {
   return formulaBurn;
 }
 
+/* Goal, pace and deficit are three faces of one number: a pound of fat is about
+   3,500 calories, so lb/week * 500 is the daily deficit. You can steer by any of
+   them and the other two follow.
+
+   The rate is capped at 1% of bodyweight per week. Past that you start losing
+   meaningful muscle rather than fat, which on a cut built around keeping a Cindy
+   score is the opposite of the point. When a date needs more than the cap the
+   app holds the cap and says which date that actually lands on — quietly running
+   a 2,000 cal deficit to hit an arbitrary deadline is how people wreck a cut. */
+const LB_CAL = 3500;
+const maxWeeklyRate = (lbs) => Math.max(0.5, round(lbs * 0.01, 2));
+
+function goalMath(P, trend, today) {
+  const toLose = round(trend - P.goalYear, 1);
+  const cap = maxWeeklyRate(trend);
+  let rate, asked = null;
+
+  if (P.goalMode === "date" && P.goalDate) {
+    const weeks = Math.max(0.5, daysBetween(today, P.goalDate) / 7);
+    rate = toLose > 0 ? toLose / weeks : 0;
+  } else if (P.goalMode === "rate") {
+    rate = +P.goalRate || 0;
+  } else {
+    rate = (P.deficit * 7) / LB_CAL;          // steering by the deficit itself
+  }
+  asked = round(rate, 2);
+  const capped = rate > cap;
+  if (capped) rate = cap;
+  if (rate < 0 || toLose <= 0) rate = 0;
+
+  const deficit = Math.round(rate * LB_CAL / 7);
+  const weeksNeeded = rate > 0.02 ? toLose / rate : null;
+  const landing = weeksNeeded ? addDays(today, Math.round(weeksNeeded * 7)) : null;
+  return { toLose, rate: round(rate,2), asked, cap, capped, deficit, weeksNeeded, landing };
+}
+
 /* Pace helpers */
 const paceOf = (miles, minutes) => (!miles || !minutes) ? null : minutes/miles;
 const fmtPace = (p) => p == null ? "—" : `${Math.floor(p)}:${String(Math.round((p%1)*60)).padStart(2,"0")}`;
@@ -249,6 +285,7 @@ const BLANK_DAY = () => ({ food: [], workouts: [], weight: null, steps: null, bu
 const DEFAULT_STATE = {
   profile: {
     startWeight: 196, goalNov: 170, goalYear: 163,
+    goalMode: "deficit", goalDate: null, goalRate: 1.5,
     age: 21, heightFt: 5, heightIn: 10, activity: 1.55,
     deficit: 750, proteinTarget: 165, stepTarget: 10000, waterTarget: 128,
     startDate: "2026-08-03",
@@ -661,7 +698,10 @@ function useDerived(state, date) {
       burnSource = day.burnKind === "active" ? `${from}+bmr`
                  : day.burnKind === "extra" ? `${from}+extra` : from;
     }
-    const calTarget = Math.max(1700, Math.round((burn - P.deficit) / 25) * 25);
+    /* The deficit can be steered by rate or by date, so resolve it rather than
+       reading P.deficit straight. */
+    const goal = goalMath(P, latestTrend, date);
+    const calTarget = Math.max(1700, Math.round((burn - goal.deficit) / 25) * 25);
 
     // This week's running
     const weekDays = Array.from({length:7}, (_,i) => addDays(wkStart, i));
@@ -721,7 +761,7 @@ function useDerived(state, date) {
     const totalMiles = Object.values(state.days).reduce((s,d) =>
       s + d.workouts.filter(w=>w.type==="run").reduce((a,w)=>a+(w.miles||0),0), 0);
 
-    return { P, day, wk, wkStart, weekDays, cal, pro, carb, fat, burn, burnSource, formulaBurn, trainingCal,
+    return { P, day, wk, wkStart, weekDays, cal, pro, carb, fat, burn, burnSource, formulaBurn, trainingCal, goal,
       calTarget, weights, trend, latest, latestTrend, weekMiles, weekTarget,
       avgCal, avgPro, streak, totalDeficit, lost, perWeek, projDate, totalMiles,
       weekBudget, weekSpent, perDayLeft, daysAfter, dayIdx, freeDaysThisWeek, swap };
@@ -748,6 +788,7 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [guide, setGuide] = useState(null);   // null | { only: string|null }
+  const [goalOpen, setGoalOpen] = useState(false);
   const [saveStatus, setSaveStatus] = useState("idle");  // idle | saving | saved | failed
   const [storageOK, setStorageOK] = useState(true);
   const hydrated = useRef(false);
@@ -858,8 +899,9 @@ export default function App() {
   }, [update, date]);
 
   const openGuide = useCallback((only = null) => setGuide({ only }), []);
+  const openGoal = useCallback(() => setGoalOpen(true), []);
 
-  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout, updateWorkout, openGuide,
+  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout, updateWorkout, openGuide, openGoal,
     date, setDate, D, flash, setTab, setState, saveStatus, storageOK, flush };
 
   if (!ready) return (
@@ -889,6 +931,12 @@ export default function App() {
       </div>
 
       {settingsOpen && <Settings ctx={ctx} onClose={()=>setSettingsOpen(false)} />}
+
+      {goalOpen && (
+        <Sheet onClose={()=>setGoalOpen(false)} title="Your goal">
+          <GoalForm ctx={ctx} onDone={()=>setGoalOpen(false)} />
+        </Sheet>
+      )}
 
       {guide && (
         <Sheet onClose={()=>setGuide(null)} title={guide.only ? "What this means" : "How this works"}>
@@ -1324,6 +1372,127 @@ function StepsForm({ ctx, onDone }) {
   );
 }
 
+/* ---------- the goal, and what it costs per day ---------- */
+
+function GoalForm({ ctx, onDone }) {
+  const { D, update, flash } = ctx, P = D.P;
+  const [mode, setMode] = useState(P.goalMode || "deficit");
+  const [weight, setWeight] = useState(String(P.goalYear));
+  const [rate, setRate] = useState(String(P.goalRate ?? 1.5));
+  const [date, setDate] = useState(P.goalDate || addDays(iso(new Date()), 180));
+  const [deficit, setDeficit] = useState(String(P.deficit));
+
+  // preview against the values being typed, not the saved ones
+  const draft = { ...P, goalMode:mode, goalYear:+weight || P.goalYear,
+    goalRate:+rate || 0, goalDate:date, deficit:+deficit || 0 };
+  const g = goalMath(draft, D.latestTrend, ctx.date);
+  const target = Math.max(1700, Math.round((D.burn - g.deficit) / 25) * 25);
+  const weeks = g.weeksNeeded;
+
+  const save = () => {
+    const w = +weight;
+    if (!w || w < 90 || w > 400) { flash("Enter a target weight between 90 and 400", "err"); return; }
+    update(s => {
+      s.profile = { ...s.profile, goalYear:w, goalMode:mode,
+        goalRate: mode === "rate" ? (+rate || 0) : s.profile.goalRate,
+        goalDate: mode === "date" ? date : s.profile.goalDate,
+        deficit: mode === "deficit" ? (+deficit || 0) : g.deficit };
+      return s;
+    });
+    flash(`Goal set — eat ${target.toLocaleString()} a day`);
+    onDone();
+  };
+
+  return (
+    <div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+        <div>
+          <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>target weight</div>
+          <input type="number" inputMode="decimal" step="0.5" value={weight} onChange={e=>setWeight(e.target.value)}
+            style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:18, textAlign:"center", padding:"10px 4px" }} />
+        </div>
+        <div>
+          <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>to lose</div>
+          <div className="dsp" style={{ fontSize:22, textAlign:"center", paddingTop:6 }}>
+            {g.toLose > 0 ? `${g.toLose} lb` : "—"}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop:14 }}><Eyebrow>Steer by</Eyebrow></div>
+      <div style={{ marginTop:6 }}>
+        <Toggle color="var(--ink)" value={mode} onPick={setMode}
+          opts={[["deficit","Daily deficit"],["rate","Pounds a week"],["date","A date"]]} />
+      </div>
+
+      <div style={{ marginTop:11 }}>
+        {mode === "deficit" && (
+          <>
+            <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>calories under your burn, per day</div>
+            <input type="number" inputMode="numeric" step="25" value={deficit} onChange={e=>setDeficit(e.target.value)}
+              style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:22, textAlign:"center", padding:"11px 4px" }} />
+          </>
+        )}
+        {mode === "rate" && (
+          <>
+            <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>pounds per week</div>
+            <input type="number" inputMode="decimal" step="0.1" value={rate} onChange={e=>setRate(e.target.value)}
+              style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:22, textAlign:"center", padding:"11px 4px" }} />
+          </>
+        )}
+        {mode === "date" && (
+          <>
+            <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>get there by</div>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)}
+              style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:16, textAlign:"center", padding:"11px 4px" }} />
+          </>
+        )}
+      </div>
+
+      <div className="rise" style={{ marginTop:13, padding:13, borderRadius:5, background:"rgba(22,32,43,.04)" }}>
+        <Eyebrow>What that means</Eyebrow>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginTop:7 }}>
+          <div>
+            <div className="dsp" style={{ fontSize:26 }}>{target.toLocaleString()}</div>
+            <div className="mono" style={{ fontSize:9.5, color:"var(--ink3)" }}>calories a day</div>
+          </div>
+          <div>
+            <div className="dsp" style={{ fontSize:26 }}>{g.rate}</div>
+            <div className="mono" style={{ fontSize:9.5, color:"var(--ink3)" }}>lb a week · {g.deficit} deficit</div>
+          </div>
+        </div>
+        <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)", marginTop:9, lineHeight:1.5 }}>
+          {g.toLose <= 0
+            ? <>You're already at or under {draft.goalYear} lb on the trend.</>
+            : g.landing
+            ? <>{g.toLose} lb to go · about {Math.round(weeks)} week{Math.round(weeks)===1?"":"s"} · lands around <strong style={{ color:"var(--ink2)" }}>{fmtShort(g.landing)}</strong></>
+            : <>At this pace you won't get there — raise the deficit or the rate.</>}
+        </div>
+      </div>
+
+      {g.capped && (
+        <div style={{ marginTop:11, padding:"11px 12px", border:"1px solid var(--warn)", borderRadius:5,
+          fontSize:12, color:"var(--ink2)", lineHeight:1.5 }}>
+          That asks for <strong>{g.asked} lb a week</strong>. Past about <strong>{g.cap} lb</strong> — 1% of your
+          bodyweight — what comes off stops being mostly fat, and on a plan built around holding your Cindy
+          score that defeats the point. Held at {g.cap}, which lands {g.landing ? fmtShort(g.landing) : "later"} instead.
+        </div>
+      )}
+
+      {target <= 1700 && (
+        <div style={{ marginTop:11, padding:"11px 12px", border:"1px solid var(--warn)", borderRadius:5,
+          fontSize:12, color:"var(--ink2)", lineHeight:1.5 }}>
+          This puts you at the 1,700 floor. Eating that little while running {D.weekTarget} miles a week is
+          how you end up injured and hungry. Either give it more time, or log more training so your burn
+          — and with it your target — comes up.
+        </div>
+      )}
+
+      <Btn kind="solid" size="md" full style={{ marginTop:14 }} onClick={save}>Save goal</Btn>
+    </div>
+  );
+}
+
 /* ---------- what should I eat ----------
 
    Ranks the library against what's actually left in the day rather than just
@@ -1461,7 +1630,7 @@ const guideSections = (ctx) => {
         <p>Each step feeds the next, so if the first one is wrong they all are.</p>
         <ol style={{ paddingLeft:17, margin:"9px 0 0" }}>
           <li><strong>Your burn.</strong> What your body spends in a day. Right now: <strong>{D.burn.toLocaleString()}</strong> ({burnLabel(D.burnSource)}). Left alone, the app works it out from your height, weight, age and activity level.</li>
-          <li><strong>Minus your deficit</strong> of {P.deficit}/day → <strong>today's target, {D.calTarget.toLocaleString()}</strong>. {P.deficit} a day is {(P.deficit*7).toLocaleString()} a week, and a pound of fat is about 3,500 calories — so roughly {round(P.deficit*7/3500,1)} lb a week.</li>
+          <li><strong>Minus your deficit</strong> of {D.goal.deficit}/day → <strong>today's target, {D.calTarget.toLocaleString()}</strong>. A pound of fat is about 3,500 calories, so that's <strong>{D.goal.rate} lb a week</strong>. Change it under ⚙ Settings → Goal.</li>
           <li><strong>Times seven</strong> → the week's budget, <strong>{wkBudget.toLocaleString()}</strong>.</li>
           <li><strong>What's left, spread over the days remaining</strong> → the per-day pace on the budget card.</li>
         </ol>
@@ -1513,6 +1682,13 @@ const guideSections = (ctx) => {
       <>
         <p>Days in a row you logged and got within about 85% of your protein floor. You're on <strong>{D.streak}</strong>.</p>
         <p style={{ marginTop:9 }}>A free day you logged honestly passes straight through without breaking it. That's deliberate — all-or-nothing thinking ends more cuts than any single meal does.</p>
+      </>
+    )},
+    { id:"goal", title:"Your goal and the pace", body: (
+      <>
+        <p>Target weight, pounds a week, and daily deficit are the same number wearing three hats — a pound of fat is about 3,500 calories, so {D.goal.rate} lb a week is a {D.goal.deficit} deficit a day. Steer by whichever you actually think in and the other two follow.</p>
+        <p style={{ marginTop:9 }}>Right now: <strong>{D.goal.toLose > 0 ? `${D.goal.toLose} lb to ${P.goalYear}` : `at or under ${P.goalYear}`}</strong>{D.goal.landing && <> at {D.goal.rate} lb a week, landing around <strong>{fmtShort(D.goal.landing)}</strong></>}.</p>
+        <p style={{ marginTop:9 }}>Pick a date and it works out the pace for you. If that pace is faster than <strong>1% of your bodyweight a week</strong> ({D.goal.cap} lb for you) it holds at the cap and tells you the honest date instead. Past that ceiling what comes off stops being mostly fat, and this plan is built around keeping the muscle.</p>
       </>
     )},
     { id:"days", title:"Days, and where yesterday went", body: (
@@ -1691,7 +1867,7 @@ function DailyReport({ ctx, onDone }) {
                 so it's mostly water weight and noise for now</>}. </>
             : <>Still settling in at {P.startWeight}. The trend line needs a couple of weeks of weigh-ins before it means anything. </>}
           {toGoal > 0
-            ? <>{toGoal} lb to go to {P.goalYear}.{D.projDate ? <> At this rate that lands around {fmtShort(D.projDate)}.</> : <> Keep logging and a projection will show up here.</>}</>
+            ? <>{toGoal} lb to go to {P.goalYear}, aiming at {D.goal.rate} lb a week.{D.goal.landing ? <> On plan that's around {fmtShort(D.goal.landing)}.</> : null}{D.projDate ? <> At your measured pace, {fmtShort(D.projDate)}.</> : <> Keep logging and a measured projection will show up here.</>}</>
             : <>You're at or past {P.goalYear}. Worth a conversation about whether to hold here.</>}
         </div>
       </div>
@@ -1748,8 +1924,8 @@ function BurnForm({ ctx, onDone }) {
                 : kind === "active" ? restN + n
                 : kind === "extra"  ? Math.round(D.formulaBurn + n)
                 : n;
-  const newTarget = Math.max(1700, Math.round((effBurn - D.P.deficit) / 25) * 25);
-  const usualTarget = Math.max(1700, Math.round((D.formulaBurn - D.P.deficit) / 25) * 25);
+  const newTarget = Math.max(1700, Math.round((effBurn - D.goal.deficit) / 25) * 25);
+  const usualTarget = Math.max(1700, Math.round((D.formulaBurn - D.goal.deficit) / 25) * 25);
   const delta = newTarget - usualTarget;
 
   // A whole-day total below roughly half the estimate isn't a whole day; a
@@ -3955,10 +4131,19 @@ function Settings({ ctx, onClose }) {
 
   return (
     <Sheet onClose={onClose} title="Settings">
-      <Eyebrow>Goals</Eyebrow>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+        <div>
+          <Eyebrow>Goal</Eyebrow>
+          <div className="mono" style={{ fontSize:10, color:"var(--ink3)", marginTop:3 }}>
+            {ctx.D.goal.toLose > 0
+              ? `${ctx.D.goal.toLose} lb to ${p.goalYear} · ${ctx.D.goal.rate} lb/wk · ${ctx.D.goal.deficit} deficit`
+              : `at or under ${p.goalYear} lb`}
+          </div>
+        </div>
+        <Btn kind="ghost" size="sm" onClick={()=>{ onClose(); ctx.openGoal(); }}>Adjust</Btn>
+      </div>
       <SetRow label="Starting weight" val={p.startWeight} onChange={v=>set("startWeight",v)} unit="lb" step="0.1" />
       <SetRow label="November target" val={p.goalNov} onChange={v=>set("goalNov",v)} unit="lb" hint="the plan's original finish line" />
-      <SetRow label="Year-end target" val={p.goalYear} onChange={v=>set("goalYear",v)} unit="lb" hint="what the projection measures against" />
 
       <div style={{ marginTop:16 }}><Eyebrow>Your body</Eyebrow></div>
       <SetRow label="Age" val={p.age} onChange={v=>set("age",v)} />
@@ -3980,7 +4165,7 @@ function Settings({ ctx, onClose }) {
       </div>
 
       <div style={{ marginTop:16 }}><Eyebrow>Daily targets</Eyebrow></div>
-      <SetRow label="Deficit" val={p.deficit} onChange={v=>set("deficit",v)} unit="cal" step="25" hint="750 ≈ 1.5 lb/week. Drop toward 500 as you get leaner." />
+      <SetRow label="Deficit" val={p.deficit} onChange={v=>set("deficit",v)} unit="cal" step="25" hint={p.goalMode === "deficit" ? "750 ≈ 1.5 lb/week. Drop toward 500 as you get leaner." : `overridden — Goal is steering by ${p.goalMode === "rate" ? "pounds a week" : "a date"}`} />
       <SetRow label="Protein floor" val={p.proteinTarget} onChange={v=>set("proteinTarget",v)} unit="g" step="5" />
       <SetRow label="Steps" val={p.stepTarget} onChange={v=>set("stepTarget",v)} step="500" />
       <SetRow label="Water" val={p.waterTarget} onChange={v=>set("waterTarget",v)} unit="oz" step="8" />
