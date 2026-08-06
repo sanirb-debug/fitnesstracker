@@ -129,7 +129,7 @@ The wrapper zeroes `.hc`'s own page layout (`minHeight`, `background`,
 | `burnKind` | burn | means |
 |---|---|---|
 | `total` | the number as-is | whole-day total from a watch |
-| `active` | `formulaBurn*0.62 + n` | a whole day's *active* calories; `*0.62` backs the 1.55 activity factor out of the estimate, leaving ≈BMR |
+| `active` | `restBurn ?? formulaBurn*0.62` `+ n` | active *plus* resting, both as a watch reports them. `restBurn` is its own day field; blank falls back to `*0.62`, which backs the 1.55 activity factor out of the estimate to leave ≈BMR. Either half alone counts as set. |
 | `extra` | `formulaBurn + n` | work beyond a normal day |
 | `training` | `formulaBurn*0.774 + (n ?? trainingCal)` | the logged workouts' own calories, over a light-day baseline |
 

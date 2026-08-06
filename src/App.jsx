@@ -211,16 +211,23 @@ function estimateBurn(profile, weight) {
 /* What a day actually cost. One definition, used by both the day view and the
    cumulative deficit ledger — they drifted the moment new burnKinds landed and
    the ledger kept reading an "extra" day as a whole-day total. */
+const num = (v) => (typeof v === "number" && v > 0) ? v : null;
+/* Resting burn when the day doesn't state one: formulaBurn carries a 1.55
+   activity factor, so *0.62 backs it out to roughly BMR. */
+const restingOf = (day, formulaBurn) => num(day.restBurn) ?? Math.round(formulaBurn * 0.62);
+
 function dayBurn(day, formulaBurn) {
   const trainingCal = (day.workouts || []).reduce((a,w) => a + (w.calories || 0), 0);
   if (day.burnKind === "training") {
-    const act = (typeof day.burn === "number" && day.burn > 0) ? day.burn : trainingCal;
-    return Math.round(formulaBurn * 0.774 + act);
+    return Math.round(formulaBurn * 0.774 + (num(day.burn) ?? trainingCal));
   }
-  if (typeof day.burn === "number" && day.burn > 0) {
-    return day.burnKind === "active" ? Math.round(formulaBurn * 0.62 + day.burn)
-         : day.burnKind === "extra"  ? Math.round(formulaBurn + day.burn)
-         : day.burn;
+  if (day.burnKind === "active") {
+    // active + resting. Either alone is enough to count as set.
+    if (num(day.burn) == null && num(day.restBurn) == null) return formulaBurn;
+    return restingOf(day, formulaBurn) + (num(day.burn) ?? 0);
+  }
+  if (num(day.burn) != null) {
+    return day.burnKind === "extra" ? Math.round(formulaBurn + day.burn) : day.burn;
   }
   return formulaBurn;
 }
@@ -1311,6 +1318,126 @@ function StepsForm({ ctx, onDone }) {
   );
 }
 
+/* ---------- what should I eat ----------
+
+   Ranks the library against what's actually left in the day rather than just
+   listing food. Protein is weighted hardest because that's the number people
+   miss on a cut, and anything that would blow the remaining calories is pushed
+   down rather than hidden — sometimes the honest answer is "this is what's
+   left, and it costs you". */
+
+const HUNGER = [
+  { id:"bite",  label:"A bite",   lo:0,   hi:260 },
+  { id:"snack", label:"Something real", lo:180, hi:520 },
+  { id:"meal",  label:"A full meal",    lo:400, hi:9999 },
+];
+
+const slotForNow = () => {
+  const h = new Date().getHours();
+  return h < 10.5 ? "breakfast" : h < 15 ? "lunch" : h < 21 ? "dinner" : "snack";
+};
+
+function suggestMeals({ ctx, hunger, slot }) {
+  const { D, state } = ctx, P = D.P;
+  const band = HUNGER.find(h => h.id === hunger) || HUNGER[1];
+  const calLeft = Math.round(D.calTarget - D.cal);
+  const proLeft = Math.round(P.proteinTarget - D.pro);
+
+  const pool = [
+    ...state.customFoods.map(f => ({ n:f.name, c:f.calories, p:f.protein, cb:f.carbs, f:f.fat, m:f.slot, custom:true })),
+    ...MEALS,
+  ];
+
+  return pool
+    .filter(m => m.c >= band.lo && m.c <= band.hi)
+    .map(m => {
+      const fits = D.day.free || calLeft <= 0 ? true : m.c <= calLeft;
+      const closesProtein = proLeft > 0 ? Math.min(m.p, proLeft) : 0;
+      let score = 0;
+      score += closesProtein * 3;               // protein is the scarce thing
+      score += (m.p / Math.max(m.c, 1)) * 260;  // density, not just raw grams
+      if (fits) score += 45; else score -= 55;
+      if (m.m === slot) score += 22;
+      if (m.custom) score += 10;                // your own food first
+      return { ...m, fits, closesProtein, score };
+    })
+    .sort((a,b) => b.score - a.score)
+    .slice(0, 6);
+}
+
+function Suggest({ ctx, onDone }) {
+  const { D, addFood, flash } = ctx, P = D.P;
+  const [slot, setSlot] = useState(slotForNow());
+  const calLeft = Math.round(D.calTarget - D.cal);
+  const proLeft = Math.round(P.proteinTarget - D.pro);
+  const [hunger, setHunger] = useState(calLeft > 0 && calLeft < 300 ? "bite" : "snack");
+  const picks = suggestMeals({ ctx, hunger, slot });
+
+  const log = (m) => {
+    addFood({ name:m.n, calories:m.c, protein:m.p, carbs:m.cb, fat:m.f, slot });
+    flash(`${m.n} logged`);
+    onDone();
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize:12.5, color:"var(--ink2)", lineHeight:1.55 }}>
+        {D.day.free
+          ? <>Free day — no target to protect. Pick whatever you actually want.</>
+          : calLeft > 0
+          ? <>You've got <strong>{calLeft.toLocaleString()} calories</strong> left{proLeft > 0 && <> and need <strong>{proLeft}g more protein</strong></>}.</>
+          : <>You're <strong>{Math.abs(calLeft).toLocaleString()} over</strong> for today{proLeft > 0 && <>, and still <strong>{proLeft}g short on protein</strong></>}. Protein's still worth having — the week absorbs the calories.</>}
+      </div>
+
+      <div style={{ marginTop:12 }}><Eyebrow>How hungry</Eyebrow></div>
+      <div style={{ marginTop:6 }}>
+        <Toggle color="var(--ink)" value={hunger} onPick={setHunger}
+          opts={HUNGER.map(h => [h.id, h.label])} />
+      </div>
+
+      <div style={{ marginTop:12 }}><Eyebrow>Log it as</Eyebrow></div>
+      <div style={{ display:"flex", gap:5, marginTop:6 }}>
+        {MEAL_SLOTS.map(s => (
+          <button key={s} onClick={()=>setSlot(s)} className="tapfade"
+            style={{ flex:1, padding:"6px 0", borderRadius:4, fontSize:11, fontWeight:600,
+              background: slot===s?"var(--ink)":"transparent", color: slot===s?"#FCFCFA":"var(--ink3)",
+              border: slot===s?"1px solid var(--ink)":"1px solid var(--rule)" }}>
+            {SLOT_LABEL[s].split(" ")[0]}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ marginTop:14 }}><Eyebrow>Worth eating</Eyebrow></div>
+      <div style={{ marginTop:6 }}>
+        {picks.length === 0 ? (
+          <div style={{ fontSize:12.5, color:"var(--ink3)", padding:"12px 0", lineHeight:1.5 }}>
+            Nothing in the library that size. Try a different amount, or use Describe a meal.
+          </div>
+        ) : picks.map(m => (
+          <button key={m.n} onClick={()=>log(m)} className="tapfade"
+            style={{ width:"100%", textAlign:"left", background:"transparent",
+              padding:"10px 0", borderBottom:"1px solid var(--rule)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", gap:10, alignItems:"baseline" }}>
+              <span style={{ fontSize:13.5, fontWeight:600 }}>{m.n}</span>
+              <span className="mono" style={{ fontSize:11, color:"var(--ink3)", whiteSpace:"nowrap" }}>
+                {m.c} · {m.p}p
+              </span>
+            </div>
+            <div className="mono" style={{ fontSize:10, marginTop:3,
+              color: m.fits ? "var(--moss)" : "var(--warn)" }}>
+              {m.closesProtein > 0 ? `+${m.p}g protein — closes ${Math.round(m.closesProtein)}g of the gap` : `${m.p}g protein`}
+              {m.fits ? "" : ` · ${(m.c - Math.max(calLeft,0)).toLocaleString()} over what's left`}
+              {m.custom ? " · yours" : ""}
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <Btn kind="ghost" size="md" full style={{ marginTop:13 }} onClick={onDone}>Nothing here</Btn>
+    </div>
+  );
+}
+
 /* ---------- how any of this works ----------
 
    Written against live numbers rather than generic documentation: the whole
@@ -1348,7 +1475,7 @@ const guideSections = (ctx) => {
         <ul style={{ paddingLeft:17, margin:"9px 0 0" }}>
           <li><strong>From my training</strong> — adds up the calories on the runs, walks and sessions you logged today. Follows the log on its own.</li>
           <li><strong>Whole day</strong> — the total on your watch, resting burn included. Replaces the estimate.</li>
-          <li><strong>Active only</strong> — your watch's whole-day active calories. Resting burn is added underneath.</li>
+          <li><strong>Active + resting</strong> — both halves your watch reports, added together. Leave resting blank and it's estimated from your body.</li>
           <li><strong>Extra today</strong> — work that went beyond a normal day, added on top.</li>
         </ul>
         <p style={{ marginTop:9 }}>The estimate already assumes the training in your plan. That's why logging one workout as a whole-day total would <em>cut</em> your food instead of raising it — the sheet warns you if a number looks like the wrong kind.</p>
@@ -1576,12 +1703,15 @@ function BurnForm({ ctx, onDone }) {
   const { D, date, patchDay, flash } = ctx;
   const [kind, setKind] = useState(D.day.burnKind || "total");
   const [val, setVal] = useState(D.day.burn != null ? String(D.day.burn) : "");
+  const [rest, setRest] = useState(D.day.restBurn != null ? String(D.day.restBurn) : "");
 
   const n = Math.round(+val || 0);
+  const restEst = Math.round(D.formulaBurn * 0.62);
+  const restN = rest.trim() === "" ? restEst : Math.round(+rest || 0);
   // In training mode a blank input means "follow the logged workouts".
   const act = kind === "training" && val.trim() === "" ? D.trainingCal : n;
   const effBurn = kind === "training" ? Math.round(D.formulaBurn * 0.774 + act)
-                : kind === "active" ? Math.round(D.formulaBurn * 0.62 + n)
+                : kind === "active" ? restN + n
                 : kind === "extra"  ? Math.round(D.formulaBurn + n)
                 : n;
   const newTarget = Math.max(1700, Math.round((effBurn - D.P.deficit) / 25) * 25);
@@ -1598,7 +1728,7 @@ function BurnForm({ ctx, onDone }) {
      override drives the target — the headline figure and the math disagree. */
   const pickKind = (k) => { if (k === "training" && kind !== "training") setVal(""); setKind(k); };
 
-  const reset = () => { patchDay(date, { burn:null, burnKind:"total", burnFrom:null }); flash("Back to the estimate"); onDone(); };
+  const reset = () => { patchDay(date, { burn:null, restBurn:null, burnKind:"total", burnFrom:null }); flash("Back to the estimate"); onDone(); };
   const save = () => {
     if (kind === "training") {
       // Blank is meaningful here: it means keep following the logged workouts.
@@ -1607,9 +1737,17 @@ function BurnForm({ ctx, onDone }) {
       flash(`Following your training — eat ${newTarget.toLocaleString()} today`);
       onDone(); return;
     }
+    if (kind === "active") {
+      if (val.trim() === "" && rest.trim() === "") { reset(); return; }
+      if (n > 12000 || restN > 12000) { flash("That doesn't look like a calorie burn", "err"); return; }
+      patchDay(date, { burn: val.trim() === "" ? null : n, restBurn: rest.trim() === "" ? null : restN,
+        burnKind:"active", burnFrom:"manual" });
+      flash(`Burn set — eat ${newTarget.toLocaleString()} today`);
+      onDone(); return;
+    }
     if (val.trim() === "") { reset(); return; }
     if (n <= 0 || n > 12000) { flash("That doesn't look like a calorie burn", "err"); return; }
-    patchDay(date, { burn:n, burnKind:kind, burnFrom:"manual" });
+    patchDay(date, { burn:n, restBurn:null, burnKind:kind, burnFrom:"manual" });
     flash(`Burn set — eat ${newTarget.toLocaleString()} today`);
     onDone();
   };
@@ -1621,16 +1759,39 @@ function BurnForm({ ctx, onDone }) {
           opts={[["training","From my training"]]} />
       </div>
       <Toggle color="var(--ink)" value={kind} onPick={pickKind}
-        opts={[["total","Whole day"],["active","Active only"],["extra","Extra today"]]} />
+        opts={[["total","Whole day"],["active","Active + resting"],["extra","Extra today"]]} />
       <p style={{ margin:"9px 0 11px", fontSize:12, color:"var(--ink2)", lineHeight:1.5 }}>
         {kind === "training"
           ? "Adds up the calories on the runs, walks and sessions you've logged today, over a light-day baseline. Updates itself as you log more."
           : kind === "total"
           ? "The total your watch shows for the whole day, resting burn included. Replaces the estimate."
           : kind === "active"
-          ? "Your watch's active calories for the whole day — not one workout. Resting burn is added underneath."
+          ? "Both halves your watch reports, added together. Active is the whole day's movement, not one workout."
           : "Work that went beyond a normal day for you. Added on top of the estimate."}
       </p>
+
+      {kind === "active" && (
+        <div style={{ marginBottom:11 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            <div>
+              <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>active</div>
+              <input type="number" inputMode="numeric" step="10" value={val} autoFocus
+                onChange={e=>setVal(e.target.value)} placeholder="900"
+                style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:18, textAlign:"center", padding:"10px 4px" }} />
+            </div>
+            <div>
+              <div className="eyebrow" style={{ fontSize:8, marginBottom:3 }}>resting</div>
+              <input type="number" inputMode="numeric" step="10" value={rest}
+                onChange={e=>setRest(e.target.value)} placeholder={String(restEst)}
+                style={{ fontFamily:"'IBM Plex Mono',monospace", fontSize:18, textAlign:"center", padding:"10px 4px" }} />
+            </div>
+          </div>
+          <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)", marginTop:7, lineHeight:1.45 }}>
+            {n.toLocaleString()} active + {restN.toLocaleString()} resting = <strong style={{ color:"var(--ink2)" }}>{(n + restN).toLocaleString()} total</strong>
+            {rest.trim() === "" && <> · resting estimated from your body — type your own if your watch reports it</>}
+          </div>
+        </div>
+      )}
 
       {kind === "training" && (
         <div style={{ margin:"0 0 11px", padding:"11px 12px", background:"rgba(76,140,74,.09)", borderRadius:5 }}>
@@ -1655,12 +1816,14 @@ function BurnForm({ ctx, onDone }) {
         </div>
       )}
 
-      <input type="number" inputMode="numeric" step="10" value={val} autoFocus
-        onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()}
-        placeholder={kind === "training" ? String(D.trainingCal || 0) : kind === "total" ? String(D.formulaBurn) : kind === "active" ? "900" : "400"}
-        style={{ fontSize:26, fontFamily:"'IBM Plex Mono',monospace", textAlign:"center", padding:"12px 6px" }} />
+      {kind !== "active" && (
+        <input type="number" inputMode="numeric" step="10" value={val} autoFocus
+          onChange={e=>setVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&save()}
+          placeholder={kind === "training" ? String(D.trainingCal || 0) : kind === "total" ? String(D.formulaBurn) : "400"}
+          style={{ fontSize:26, fontFamily:"'IBM Plex Mono',monospace", textAlign:"center", padding:"12px 6px" }} />
+      )}
 
-      {(n > 0 || kind === "training") && (
+      {(n > 0 || kind === "training" || kind === "active") && (
         <div className="rise" style={{ marginTop:11, padding:"12px 13px", borderRadius:5,
           background: delta >= 0 ? "rgba(76,140,74,.09)" : "rgba(198,65,58,.08)" }}>
           <div className="eyebrow" style={{ color: delta >= 0 ? "var(--moss)" : "var(--warn)" }}>Eat today</div>
@@ -2257,6 +2420,13 @@ function Food({ ctx }) {
         <Btn kind="ghost" size="md" onClick={()=>{setMode("manual"); setSlot("snack");}}>Manual</Btn>
       </div>
 
+      <button className="tapfade" onClick={()=>setMode("suggest")}
+        style={{ padding:"10px 12px", border:"1px dashed var(--rule)", borderRadius:5, textAlign:"left",
+          fontSize:12.5, color:"var(--ink2)", background:"transparent" }}>
+        Hungry but don't know what you want?{" "}
+        <strong style={{ color:"var(--bib)" }}>Find something that fits →</strong>
+      </button>
+
       {!D.day.free && (
         <button className="tapfade" onClick={()=>{ patchDay(date,{free:true}); flash("Free day — go enjoy it"); }}
           style={{ padding:"9px 12px", border:"1px dashed var(--rule)", borderRadius:5, textAlign:"left",
@@ -2315,9 +2485,11 @@ function Food({ ctx }) {
       {mode && (
         <Sheet onClose={()=>setMode(null)} title={
           mode==="library" ? `Add to ${SLOT_LABEL[slot].toLowerCase()}` :
-          mode==="describe" ? "Describe what you ate" : "Manual entry"}>
+          mode==="describe" ? "Describe what you ate" :
+          mode==="suggest" ? "What should I eat?" : "Manual entry"}>
           {mode==="library" && <Library q={q} setQ={setQ} slot={slot} setSlot={setSlot} ctx={ctx} onDone={()=>setMode(null)} />}
           {mode==="describe" && <Describe slot={slot} ctx={ctx} onDone={()=>setMode(null)} />}
+          {mode==="suggest" && <Suggest ctx={ctx} onDone={()=>setMode(null)} />}
           {mode==="manual" && <Manual slot={slot} setSlot={setSlot} ctx={ctx} onDone={()=>setMode(null)} />}
         </Sheet>
       )}
