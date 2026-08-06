@@ -208,6 +208,23 @@ function estimateBurn(profile, weight) {
   return Math.round(bmr * profile.activity);
 }
 
+/* What a day actually cost. One definition, used by both the day view and the
+   cumulative deficit ledger — they drifted the moment new burnKinds landed and
+   the ledger kept reading an "extra" day as a whole-day total. */
+function dayBurn(day, formulaBurn) {
+  const trainingCal = (day.workouts || []).reduce((a,w) => a + (w.calories || 0), 0);
+  if (day.burnKind === "training") {
+    const act = (typeof day.burn === "number" && day.burn > 0) ? day.burn : trainingCal;
+    return Math.round(formulaBurn * 0.774 + act);
+  }
+  if (typeof day.burn === "number" && day.burn > 0) {
+    return day.burnKind === "active" ? Math.round(formulaBurn * 0.62 + day.burn)
+         : day.burnKind === "extra"  ? Math.round(formulaBurn + day.burn)
+         : day.burn;
+  }
+  return formulaBurn;
+}
+
 /* Pace helpers */
 const paceOf = (miles, minutes) => (!miles || !minutes) ? null : minutes/miles;
 const fmtPace = (p) => p == null ? "—" : `${Math.floor(p)}:${String(Math.round((p%1)*60)).padStart(2,"0")}`;
@@ -622,25 +639,16 @@ function useDerived(state, date) {
     /* What the day's logged training cost, summed off the workouts themselves. */
     const trainingCal = (day.workouts || []).reduce((a,w) => a + (w.calories || 0), 0);
 
-    let burn = formulaBurn, burnSource = "estimate";
+    /* burn itself comes from the shared helper; only the label is worked out here.
+       training — follows the logged workouts (day.burn overrides the sum)
+       total    — the whole day, replaces the estimate outright
+       active   — a whole day's *active* calories, over ~BMR
+       extra    — work beyond a normal day, on top of the estimate */
+    const burn = dayBurn(day, formulaBurn);
+    let burnSource = "estimate";
     if (day.burnKind === "training") {
-      /* Training calories cover structured work only — no walking to class, no
-         standing around — so the baseline underneath them is a light day
-         (BMR * 1.2), not the ~BMR used for a watch's whole-day active figure.
-         formulaBurn carries a 1.55 activity factor, so 1.2/1.55 = 0.774 backs
-         it down. day.burn, when set, overrides the logged sum. */
-      const act = (typeof day.burn === "number" && day.burn > 0) ? day.burn : trainingCal;
-      burn = Math.round(formulaBurn * 0.774 + act);
       burnSource = (typeof day.burn === "number" && day.burn > 0) ? "training+set" : "training";
     } else if (typeof day.burn === "number" && day.burn > 0) {
-      /* three ways to say what today cost:
-         total  — the whole day, replaces the estimate outright
-         active — a whole day's *active* calories; resting burn is added under it
-                  (formulaBurn * 0.62 ≈ BMR once the 1.55 activity factor is out)
-         extra  — work beyond a normal day, added on top of the estimate */
-      burn = day.burnKind === "active" ? Math.round(formulaBurn * 0.62 + day.burn)
-           : day.burnKind === "extra"  ? Math.round(formulaBurn + day.burn)
-           : day.burn;
       // Days logged before burnFrom existed came from Garmin, so that's the default.
       const from = day.burnFrom === "manual" ? "manual" : "garmin";
       burnSource = day.burnKind === "active" ? `${from}+bmr`
@@ -678,10 +686,7 @@ function useDerived(state, date) {
     const allLogged = Object.entries(state.days).filter(([,d]) => d.food.length > 0);
     const totalDeficit = allLogged.reduce((s,[k,d]) => {
       const c = d.food.reduce((a,f)=>a+(f.calories||0),0);
-      const fb = estimateBurn(P, latest);
-      const b = typeof d.burn === "number" && d.burn > 0
-        ? (d.burnKind === "active" ? Math.round(fb*0.62 + d.burn) : d.burn) : fb;
-      return s + (b - c);
+      return s + (dayBurn(d, estimateBurn(P, latest)) - c);
     }, 0);
 
     // Projection off trend weight
@@ -1058,6 +1063,7 @@ function Today({ ctx }) {
   const [swapOpen, setSwapOpen] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
   const [burnOpen, setBurnOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const sched = DAY_TEMPLATE[dow(date)];
   const left = D.calTarget - D.cal;
   const free = D.day.free;
@@ -1112,6 +1118,13 @@ function Today({ ctx }) {
             hint={burnLabel(D.burnSource)} onClick={()=>setBurnOpen(true)} />
           <MiniStat label="Streak" val={`${D.streak}d`} hint="protein hit" />
         </div>
+
+        <button onClick={()=>setReportOpen(true)} className="tapfade"
+          style={{ width:"100%", marginTop:13, padding:"11px 0", borderRadius:5,
+            border:"1px solid var(--ink)", background:"transparent",
+            fontSize:12.5, fontWeight:700, letterSpacing:".01em" }}>
+          Report from today →
+        </button>
       </Card>
 
       {/* today's session */}
@@ -1217,6 +1230,12 @@ function Today({ ctx }) {
           <BurnForm ctx={ctx} onDone={()=>setBurnOpen(false)} />
         </Sheet>
       )}
+
+      {reportOpen && (
+        <Sheet onClose={()=>setReportOpen(false)} title="Today's report">
+          <DailyReport ctx={ctx} onDone={()=>setReportOpen(false)} />
+        </Sheet>
+      )}
     </div>
   );
 }
@@ -1275,6 +1294,148 @@ function StepsForm({ ctx, onDone }) {
         {D.day.steps != null && (
           <Btn kind="ghost" size="md" onClick={()=>{ patchDay(date,{steps:null}); flash("Steps cleared"); onDone(); }}>Clear</Btn>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- end of day ---------- */
+
+const Row = ({ k, v, hint }) => (
+  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline",
+    padding:"7px 0", borderBottom:"1px solid var(--rule)", gap:12 }}>
+    <span style={{ fontSize:12.5, color:"var(--ink2)" }}>{k}</span>
+    <span className="mono" style={{ fontSize:12.5, fontWeight:600, textAlign:"right" }}>
+      {v}{hint && <span style={{ color:"var(--ink3)", fontWeight:400 }}> {hint}</span>}
+    </span>
+  </div>
+);
+
+/* Computed locally rather than through the API: it costs nothing, works with no
+   key and no signal, and every number in it is already derived. An AI note on
+   top would read nicer but would make the whole thing unavailable exactly when
+   you most want it — sitting in bed at 11pm with one bar. */
+function DailyReport({ ctx, onDone }) {
+  const { D, date, setTab } = ctx;
+  const P = D.P, day = D.day;
+
+  const runMiles  = day.workouts.filter(w=>w.type==="run").reduce((a,w)=>a+(w.miles||0),0);
+  const walkMiles = day.workouts.filter(w=>w.type==="walk").reduce((a,w)=>a+(w.miles||0),0);
+  const ate = day.food.length > 0;
+  const overBy = Math.round(D.cal - D.calTarget);
+  const proShort = Math.round(P.proteinTarget - D.pro);
+
+  const wins = [];
+  if (day.free) wins.push("You took a free day and logged it honestly. That's the habit that keeps a cut alive.");
+  else if (ate && overBy <= 0) wins.push(`Came in at ${Math.round(D.cal).toLocaleString()} against a ${D.calTarget.toLocaleString()} target — ${Math.abs(overBy).toLocaleString()} under.`);
+  if (D.pro >= P.proteinTarget) wins.push(`Protein floor cleared: ${Math.round(D.pro)}g of ${P.proteinTarget}g.`);
+  if (runMiles > 0) wins.push(`Ran ${round(runMiles,1)} mi.`);
+  if (walkMiles > 0) wins.push(`Walked ${round(walkMiles,1)} mi.`);
+  if (day.workouts.length > 0 && runMiles === 0 && walkMiles === 0)
+    wins.push(`Trained: ${day.workouts.map(w=>w.name).join(", ")}.`);
+  if (D.trainingCal > 0) wins.push(`Burned about ${D.trainingCal.toLocaleString()} cal in training.`);
+  if (day.steps != null && day.steps >= P.stepTarget) wins.push(`${day.steps.toLocaleString()} steps — target hit.`);
+  if ((day.water||0) >= P.waterTarget) wins.push("Water target done.");
+  if (day.weight != null) wins.push("Weighed in — the trend line only works if you keep feeding it.");
+  if (D.streak >= 2) wins.push(`${D.streak} days logged in a row.`);
+
+  const gaps = [];
+  if (!ate) gaps.push("No food logged today. Even a rough guess beats a blank day — the weekly budget is built off these.");
+  if (ate && !day.free && overBy > 0)
+    gaps.push(`${overBy.toLocaleString()} over target. That's ${round(overBy/3500,2)} lb of this week's loss — spend it out over the next few days rather than starving tomorrow.`);
+  if (ate && proShort > 0) gaps.push(`${proShort}g short on protein. That's the one number worth chasing on a cut — it's what keeps the weight you lose from being muscle.`);
+  if (day.steps == null) gaps.push("No step count in yet.");
+  else if (day.steps < P.stepTarget) gaps.push(`${(P.stepTarget - day.steps).toLocaleString()} steps short.`);
+  if (day.weight == null) gaps.push("No weigh-in. Morning, after the bathroom, before food — same conditions every time.");
+
+  const tISO = addDays(date, 1);
+  const tmpl = DAY_TEMPLATE[dow(tISO)];
+  const tdow = dow(tISO);
+  const tMiles = tdow === 1 ? D.wk.mon : tdow === 5 ? D.wk.fri : tdow === 6 ? D.wk.sat : null;
+  const newWeek = tdow === 1;
+
+  const toGoal = round(D.latestTrend - P.goalYear, 1);
+
+  return (
+    <div>
+      <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)" }}>
+        {fmtShort(date)} · day {String(daysBetween(P.startDate, date)+1).padStart(3,"0")} · week {D.wk.w} of 21
+      </div>
+
+      <div style={{ marginTop:13 }}><Eyebrow>The numbers</Eyebrow></div>
+      <div style={{ marginTop:5 }}>
+        <Row k="Eaten" v={`${Math.round(D.cal).toLocaleString()}`} hint={day.free ? "free day" : `of ${D.calTarget.toLocaleString()}`} />
+        <Row k="Protein" v={`${Math.round(D.pro)}g`} hint={`of ${P.proteinTarget}g`} />
+        <Row k="Carbs · Fat" v={`${Math.round(D.carb)}g · ${Math.round(D.fat)}g`} />
+        <Row k="Burned" v={D.burn.toLocaleString()} hint={burnLabel(D.burnSource)} />
+        <Row k="Steps" v={day.steps != null ? day.steps.toLocaleString() : "—"} hint={`of ${P.stepTarget.toLocaleString()}`} />
+        {(runMiles > 0 || walkMiles > 0) &&
+          <Row k="Distance" v={`${round(runMiles + walkMiles,1)} mi`} hint={walkMiles > 0 ? `${round(runMiles,1)} run · ${round(walkMiles,1)} walk` : "run"} />}
+        <Row k="Weight" v={day.weight != null ? `${day.weight} lb` : "—"} hint={`trend ${D.latestTrend}`} />
+      </div>
+
+      {wins.length > 0 && (
+        <>
+          <div style={{ marginTop:15 }}><Eyebrow color="var(--moss)">What went well</Eyebrow></div>
+          <ul style={{ margin:"7px 0 0", paddingLeft:17 }}>
+            {wins.map((w,i)=>(
+              <li key={i} style={{ fontSize:12.5, color:"var(--ink2)", lineHeight:1.5, marginBottom:5 }}>{w}</li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {gaps.length > 0 && (
+        <>
+          <div style={{ marginTop:15 }}><Eyebrow color="var(--bib)">Worth a look</Eyebrow></div>
+          <ul style={{ margin:"7px 0 0", paddingLeft:17 }}>
+            {gaps.map((g,i)=>(
+              <li key={i} style={{ fontSize:12.5, color:"var(--ink2)", lineHeight:1.5, marginBottom:5 }}>{g}</li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <div style={{ marginTop:16, padding:13, background:"rgba(22,32,43,.04)", borderRadius:5 }}>
+        <Eyebrow>Where this leaves you</Eyebrow>
+        <div className="dsp" style={{ fontSize:28, marginTop:3 }}>
+          {D.latestTrend} <span className="mono" style={{ fontSize:12, color:"var(--ink3)" }}>lb trend</span>
+        </div>
+        <div style={{ fontSize:12.5, color:"var(--ink2)", marginTop:6, lineHeight:1.55 }}>
+          {D.lost > 0
+            ? <>Down {round(D.lost,1)} lb from {P.startWeight} since you started, about {round(D.perWeek,2)} lb a week
+              {daysBetween(P.startDate, date) < 14 && <> — though that rate is off only {daysBetween(P.startDate, date)+1} days,
+                so it's mostly water weight and noise for now</>}. </>
+            : <>Still settling in at {P.startWeight}. The trend line needs a couple of weeks of weigh-ins before it means anything. </>}
+          {toGoal > 0
+            ? <>{toGoal} lb to go to {P.goalYear}.{D.projDate ? <> At this rate that lands around {fmtShort(D.projDate)}.</> : <> Keep logging and a projection will show up here.</>}</>
+            : <>You're at or past {P.goalYear}. Worth a conversation about whether to hold here.</>}
+        </div>
+      </div>
+
+      <div style={{ marginTop:12, padding:13, borderRadius:5, background:"rgba(30,111,217,.07)" }}>
+        <Eyebrow color="var(--lane)">Tomorrow — {parseISO(tISO).toLocaleDateString("en-US",{weekday:"long"})}</Eyebrow>
+        <div style={{ fontSize:14.5, fontWeight:700, marginTop:4 }}>{tmpl.name}</div>
+        {tMiles ? (
+          <div className="mono" style={{ fontSize:11, color:"var(--lane)", marginTop:3 }}>{tMiles} mi on the board</div>
+        ) : null}
+        <div style={{ fontSize:12, color:"var(--ink2)", marginTop:6, lineHeight:1.5 }}>{tmpl.detail}</div>
+        {newWeek && (
+          <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)", marginTop:7 }}>
+            New week starts — week {D.wk.w + 1} of 21.
+          </div>
+        )}
+      </div>
+
+      <p style={{ margin:"14px 0 0", fontSize:12.5, color:"var(--ink2)", lineHeight:1.55 }}>
+        {gaps.length === 0
+          ? "Clean day. Do it again tomorrow and the graph takes care of itself."
+          : "One day doesn't decide this. Log tomorrow, hit the protein, and keep the streak honest."}
+      </p>
+
+      <div style={{ display:"flex", gap:7, marginTop:14 }}>
+        <Btn kind="solid" size="md" full onClick={onDone}>Done</Btn>
+        <Btn kind="ghost" size="md" onClick={()=>{ onDone(); setTab("plan"); }}>See the plan</Btn>
       </div>
     </div>
   );

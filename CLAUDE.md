@@ -146,6 +146,12 @@ Runs and walks estimate their own calories via `activityCalories()`, which picks
 a MET off pace and hands it to the same `metCalories()` the session logger uses,
 so the two agree. It falls back to cost-per-mile when there's no time.
 
+**`dayBurn()` is the single definition — use it, don't inline the rules.** The
+day view and the cumulative deficit ledger each had their own copy, and the
+ledger silently kept reading an `extra` day as a whole-day total once that mode
+was added: a ~2,900 cal error per day in "pounds earned". Any new `burnKind`
+goes in `dayBurn()` and both callers get it.
+
 **`formulaBurn` already includes an activity factor of 1.55** — the plan's usual
 training is baked in. So "log one workout's calories" is not a safe input: as
 `total` it collapses the target to the 1700 floor, and as `active` it *lowers*
