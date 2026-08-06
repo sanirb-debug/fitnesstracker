@@ -740,6 +740,7 @@ export default function App() {
   const [date, setDate] = useState(iso(new Date()));
   const [toast, setToast] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [guide, setGuide] = useState(null);   // null | { only: string|null }
   const [saveStatus, setSaveStatus] = useState("idle");  // idle | saving | saved | failed
   const [storageOK, setStorageOK] = useState(true);
   const hydrated = useRef(false);
@@ -849,7 +850,9 @@ export default function App() {
     });
   }, [update, date]);
 
-  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout, updateWorkout,
+  const openGuide = useCallback((only = null) => setGuide({ only }), []);
+
+  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout, updateWorkout, openGuide,
     date, setDate, D, flash, setTab, setState, saveStatus, storageOK, flush };
 
   if (!ready) return (
@@ -879,6 +882,12 @@ export default function App() {
       </div>
 
       {settingsOpen && <Settings ctx={ctx} onClose={()=>setSettingsOpen(false)} />}
+
+      {guide && (
+        <Sheet onClose={()=>setGuide(null)} title={guide.only ? "What this means" : "How this works"}>
+          <Guide ctx={ctx} only={guide.only} onDone={()=>setGuide(null)} onAll={()=>setGuide({ only:null })} />
+        </Sheet>
+      )}
 
       {toast && (
         <div className="rise" style={{ position:"fixed", bottom:"calc(82px + env(safe-area-inset-bottom))", left:"50%", transform:"translateX(-50%)",
@@ -1196,7 +1205,10 @@ function Today({ ctx }) {
       {/* protein rescue */}
       {!free && D.pro < D.P.proteinTarget && D.cal > D.calTarget * 0.55 && (
         <Card style={{ background:"rgba(76,140,74,.07)", borderColor:"rgba(76,140,74,.3)" }}>
-          <Eyebrow color="var(--moss)">Protein rescue — {Math.round(D.P.proteinTarget - D.pro)}g short</Eyebrow>
+          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+            <Eyebrow color="var(--moss)">Protein rescue — {Math.round(D.P.proteinTarget - D.pro)}g short</Eyebrow>
+            <Why label="the protein floor" onClick={()=>ctx.openGuide("protein")} />
+          </div>
           <div style={{ display:"flex", gap:7, marginTop:9, flexWrap:"wrap" }}>
             {MEALS.filter(m => m.p >= 15 && m.c <= 260).slice(0,4).map(m => (
               <button key={m.n} className="tapfade"
@@ -1211,7 +1223,7 @@ function Today({ ctx }) {
 
       <WeekBudget ctx={ctx} />
       <FreeDay ctx={ctx} />
-      <Ledger D={D} />
+      <Ledger D={D} ctx={ctx} />
 
       {swapOpen && (
         <Sheet onClose={()=>setSwapOpen(false)} title="Swap today's session">
@@ -1296,6 +1308,116 @@ function StepsForm({ ctx, onDone }) {
         )}
       </div>
     </div>
+  );
+}
+
+/* ---------- how any of this works ----------
+
+   Written against live numbers rather than generic documentation: the whole
+   point is reading "your target is 1,900 because the app thinks you burn
+   2,650", not "target = burn - deficit". Each card that isn't self-evident
+   carries a ? that opens just its own section. */
+
+const guideSections = (ctx) => {
+  const { D } = ctx, P = D.P;
+  const wkBudget = D.calTarget * 7;
+  const lb = round(D.totalDeficit / 3500, 1);
+  return [
+    { id:"chain", title:"Where every number comes from", body: (
+      <>
+        <p>Each step feeds the next, so if the first one is wrong they all are.</p>
+        <ol style={{ paddingLeft:17, margin:"9px 0 0" }}>
+          <li><strong>Your burn.</strong> What your body spends in a day. Right now: <strong>{D.burn.toLocaleString()}</strong> ({burnLabel(D.burnSource)}). Left alone, the app works it out from your height, weight, age and activity level.</li>
+          <li><strong>Minus your deficit</strong> of {P.deficit}/day → <strong>today's target, {D.calTarget.toLocaleString()}</strong>. {P.deficit} a day is {(P.deficit*7).toLocaleString()} a week, and a pound of fat is about 3,500 calories — so roughly {round(P.deficit*7/3500,1)} lb a week.</li>
+          <li><strong>Times seven</strong> → the week's budget, <strong>{wkBudget.toLocaleString()}</strong>.</li>
+          <li><strong>What's left, spread over the days remaining</strong> → the per-day pace on the budget card.</li>
+        </ol>
+        <p style={{ marginTop:9 }}>Change your burn and all four move together.</p>
+      </>
+    )},
+    { id:"budget", title:"The week budget", body: (
+      <>
+        <p>Calories work like money in a weekly account, not a daily pass/fail. A big dinner isn't a failure — it's a withdrawal you cover across the other days. Your body settles up over a week; it doesn't reset at midnight.</p>
+        <p style={{ marginTop:9 }}>You have <strong>{wkBudget.toLocaleString()}</strong> for the week and have spent <strong>{Math.round(D.weekSpent).toLocaleString()}</strong>, leaving about <strong>{D.perDayLeft.toLocaleString()}/day</strong> across today and the {D.daysAfter} day{D.daysAfter===1?"":"s"} after it.</p>
+        <p style={{ marginTop:9 }}><strong>One catch worth knowing.</strong> A day earlier this week that you never logged is counted as if you ate the full target, not zero. Otherwise skipping the log would look like free calories and the number would flatter you.</p>
+      </>
+    )},
+    { id:"burn", title:"Calories burned", body: (
+      <>
+        <p>Left alone the app estimates your burn from your body and activity level. Tap the Burn tile to set it yourself — four ways, because the number means different things depending on where it came from:</p>
+        <ul style={{ paddingLeft:17, margin:"9px 0 0" }}>
+          <li><strong>From my training</strong> — adds up the calories on the runs, walks and sessions you logged today. Follows the log on its own.</li>
+          <li><strong>Whole day</strong> — the total on your watch, resting burn included. Replaces the estimate.</li>
+          <li><strong>Active only</strong> — your watch's whole-day active calories. Resting burn is added underneath.</li>
+          <li><strong>Extra today</strong> — work that went beyond a normal day, added on top.</li>
+        </ul>
+        <p style={{ marginTop:9 }}>The estimate already assumes the training in your plan. That's why logging one workout as a whole-day total would <em>cut</em> your food instead of raising it — the sheet warns you if a number looks like the wrong kind.</p>
+      </>
+    )},
+    { id:"ledger", title:"The deficit ledger", body: (
+      <>
+        <p>For every day you logged, it works out what you burned minus what you ate, adds them all up, and divides by 3,500 — the calories in a pound of fat.</p>
+        <p style={{ marginTop:9 }}>You're at <strong>{Math.round(D.totalDeficit).toLocaleString()} calories banked</strong>, about <strong>{lb} lb</strong>.</p>
+        <p style={{ marginTop:9 }}>It's kept separate from the scale on purpose. The scale swings on salt, water and sleep; this only moves when you actually eat under your burn.</p>
+      </>
+    )},
+    { id:"trend", title:"Trend weight vs the scale", body: (
+      <>
+        <p>Two numbers, and they're not the same thing.</p>
+        <p style={{ marginTop:9 }}><strong>Scale weight</strong> is this morning's reading — {D.latest} lb. It moves a couple of pounds either way for reasons that have nothing to do with fat.</p>
+        <p style={{ marginTop:9 }}><strong>Trend</strong> is the average of your last seven weigh-ins — {D.latestTrend} lb. One reading is noise; seven make a signal.</p>
+        <p style={{ marginTop:9 }}>Judge progress on the trend, always. That's the whole reason it wants a weigh-in every morning, same conditions each time.</p>
+      </>
+    )},
+    { id:"protein", title:"Why protein has its own alarm", body: (
+      <>
+        <p>{P.proteinTarget}g is a floor, not a target. Eating under your burn means your body takes the weight from somewhere, and protein plus training is what decides whether that's fat or muscle.</p>
+        <p style={{ marginTop:9 }}>Losing 30 lb where 8 of it is muscle is a much worse result than the scale makes it look — you end up lighter, weaker and easier to regain on.</p>
+        <p style={{ marginTop:9 }}>The <strong>protein rescue</strong> card appears when you're short and nearly out of calories to fix it, so it offers high-protein, low-calorie options rather than just telling you to eat more.</p>
+      </>
+    )},
+    { id:"streak", title:"The streak", body: (
+      <>
+        <p>Days in a row you logged and got within about 85% of your protein floor. You're on <strong>{D.streak}</strong>.</p>
+        <p style={{ marginTop:9 }}>A free day you logged honestly passes straight through without breaking it. That's deliberate — all-or-nothing thinking ends more cuts than any single meal does.</p>
+      </>
+    )},
+    { id:"free", title:"Free days", body: (
+      <>
+        <p>Mark a party, a meal out or a day you're not cooking as a free day. Log what you can; the week absorbs it.</p>
+        <p style={{ marginTop:9 }}>Nothing to make up the next day. You eat normally, the weekly total takes the hit, and the streak survives — which is the point.</p>
+      </>
+    )},
+  ];
+};
+
+function Guide({ ctx, only, onDone, onAll }) {
+  const all = guideSections(ctx);
+  const shown = only ? all.filter(s => s.id === only) : all;
+  return (
+    <div>
+      {shown.map((s,i) => (
+        <div key={s.id} style={{ marginTop: i === 0 ? 0 : 18 }}>
+          <Eyebrow>{s.title}</Eyebrow>
+          <div style={{ fontSize:12.5, color:"var(--ink2)", lineHeight:1.6, marginTop:6 }}>{s.body}</div>
+        </div>
+      ))}
+      <div style={{ display:"flex", gap:7, marginTop:16 }}>
+        <Btn kind="solid" size="md" full onClick={onDone}>Got it</Btn>
+        {only && <Btn kind="ghost" size="md" onClick={onAll}>Explain all of it</Btn>}
+      </div>
+    </div>
+  );
+}
+
+/* A quiet ? beside a card that isn't self-evident. */
+function Why({ onClick, label, dark }) {
+  return (
+    <button onClick={onClick} className="tapfade" aria-label={`What does ${label} mean?`}
+      style={{ width:17, height:17, borderRadius:9, padding:0, flexShrink:0,
+        border:`1px solid ${dark ? "rgba(252,252,250,.32)" : "var(--rule)"}`,
+        background:"transparent", color: dark ? "rgba(252,252,250,.6)" : "var(--ink3)",
+        fontSize:10, fontWeight:700, lineHeight:1 }}>?</button>
   );
 }
 
@@ -1435,7 +1557,7 @@ function DailyReport({ ctx, onDone }) {
 
       <div style={{ display:"flex", gap:7, marginTop:14 }}>
         <Btn kind="solid" size="md" full onClick={onDone}>Done</Btn>
-        <Btn kind="ghost" size="md" onClick={()=>{ onDone(); setTab("plan"); }}>See the plan</Btn>
+        <Btn kind="ghost" size="md" onClick={()=>{ onDone(); ctx.openGuide(); }}>What do these mean?</Btn>
       </div>
     </div>
   );
@@ -1769,7 +1891,10 @@ function WeekBudget({ ctx }) {
     <Card>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div>
-          <Eyebrow>Week {D.wk.w} budget</Eyebrow>
+          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+            <Eyebrow>Week {D.wk.w} budget</Eyebrow>
+            <Why label="the week budget" onClick={()=>ctx.openGuide("budget")} />
+          </div>
           <div style={{ display:"flex", alignItems:"baseline", gap:5, marginTop:3 }}>
             <span className="dsp" style={{ fontSize:30 }}>{Math.round(D.weekSpent).toLocaleString()}</span>
             <span className="mono" style={{ fontSize:11, color:"var(--ink3)" }}>/ {D.weekBudget.toLocaleString()}</span>
@@ -1853,13 +1978,16 @@ const RunChip = ({ miles }) => (
   </div>
 );
 
-function Ledger({ D }) {
+function Ledger({ D, ctx }) {
   const poundsEarned = D.totalDeficit / 3500;
   return (
     <Card style={{ background:"var(--ink)", borderColor:"var(--ink)" }}>
       <div style={{ display:"flex", justifyContent:"space-between", gap:12 }}>
         <div>
-          <div className="eyebrow" style={{ color:"rgba(252,252,250,.5)" }}>Deficit ledger</div>
+          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+            <div className="eyebrow" style={{ color:"rgba(252,252,250,.5)" }}>Deficit ledger</div>
+            <Why label="the deficit ledger" dark onClick={()=>ctx.openGuide("ledger")} />
+          </div>
           <div style={{ display:"flex", alignItems:"baseline", gap:5, marginTop:3 }}>
             <span className="dsp" style={{ fontSize:34, color:"var(--bib)" }}>{round(poundsEarned,1)}</span>
             <span className="mono" style={{ fontSize:11, color:"rgba(252,252,250,.55)" }}>lb earned</span>
@@ -3681,6 +3809,18 @@ function Settings({ ctx, onClose }) {
             </div>
           </div>
           <Btn kind="ghost" size="sm" onClick={()=>setBackup(true)}>Copy / restore</Btn>
+        </div>
+      </div>
+
+      <div style={{ marginTop:18, paddingTop:16, borderTop:"1px solid var(--rule)" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+          <div>
+            <Eyebrow>How this works</Eyebrow>
+            <div className="mono" style={{ fontSize:10, color:"var(--ink3)", marginTop:3 }}>
+              every number, and where it comes from
+            </div>
+          </div>
+          <Btn kind="ghost" size="sm" onClick={()=>{ onClose(); ctx.openGuide(); }}>Explain it</Btn>
         </div>
       </div>
       {backup && <Sheet onClose={()=>setBackup(false)} title="Backup & restore"><Backup ctx={ctx} /></Sheet>}
