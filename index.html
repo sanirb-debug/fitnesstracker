@@ -40,6 +40,16 @@
   <script>
     // Offline support. Registered after load so it never delays first paint.
     if ("serviceWorker" in navigator) {
+      // Was a worker already driving this page? Only then is a controller
+      // change an *update*, and only then should we reload — on a first-ever
+      // install the new worker claims the page and that is not a new build.
+      var hadController = !!navigator.serviceWorker.controller;
+      var refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", function () {
+        if (!hadController || refreshing) return;
+        refreshing = true;
+        location.reload();
+      });
       window.addEventListener("load", function () {
         navigator.serviceWorker.register("./sw.js").catch(function () { /* offline is a bonus, not a requirement */ });
       });

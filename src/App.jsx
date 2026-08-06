@@ -877,7 +877,7 @@ export default function App() {
       <style>{CSS}</style>
       <div className="hcpad" style={{ maxWidth:520, margin:"0 auto" }}>
         <Header D={D} date={date} setDate={setDate} onSettings={()=>setSettingsOpen(true)}
-          saveStatus={saveStatus} storageOK={storageOK} />
+          saveStatus={saveStatus} storageOK={storageOK} openGuide={openGuide} />
         <div style={{ padding:"0 14px" }}>
           {!storageOK && <StorageWarning ctx={ctx} />}
           {tab==="today" && <Today ctx={ctx} />}
@@ -1006,7 +1006,7 @@ function Backup({ ctx }) {
    HEADER — the race bib
    ============================================================ */
 
-function Header({ D, date, setDate, onSettings, saveStatus, storageOK }) {
+function Header({ D, date, setDate, onSettings, saveStatus, storageOK, openGuide }) {
   const dayNum = daysBetween(D.P.startDate, date) + 1;
   const isToday = date === iso(new Date());
   return (
@@ -1034,8 +1034,11 @@ function Header({ D, date, setDate, onSettings, saveStatus, storageOK }) {
         </div>
 
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:5 }}>
-          <button onClick={onSettings} className="tapfade" aria-label="Settings"
-            style={{ color:"var(--ink3)", fontSize:19, padding:"2px" }}>⚙</button>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <Why label="days and history" onClick={()=>openGuide("days")} />
+            <button onClick={onSettings} className="tapfade" aria-label="Settings"
+              style={{ color:"var(--ink3)", fontSize:19, padding:"2px" }}>⚙</button>
+          </div>
           <div className="mono" title="Save status" style={{ fontSize:8.5, letterSpacing:".05em",
             display:"flex", alignItems:"center", gap:3.5, whiteSpace:"nowrap",
             color: !storageOK || saveStatus==="failed" ? "var(--warn)"
@@ -1151,9 +1154,12 @@ function Today({ ctx }) {
         <div style={{ padding:16 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10 }}>
             <div style={{ flex:1 }}>
-              <Eyebrow color={D.swap ? "var(--moss)" : undefined}>
-                {D.swap ? "Swapped in today" : "On the board today"}
-              </Eyebrow>
+              <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                <Eyebrow color={D.swap ? "var(--moss)" : undefined}>
+                  {D.swap ? "Swapped in today" : "On the board today"}
+                </Eyebrow>
+                <Why label="today's session" onClick={()=>ctx.openGuide("board")} />
+              </div>
               <div className="dsp" style={{ fontSize:25, marginTop:3 }}>
                 {(D.swap ? D.swap.name : sched.name).toUpperCase()}
               </div>
@@ -1507,6 +1513,34 @@ const guideSections = (ctx) => {
       <>
         <p>Days in a row you logged and got within about 85% of your protein floor. You're on <strong>{D.streak}</strong>.</p>
         <p style={{ marginTop:9 }}>A free day you logged honestly passes straight through without breaking it. That's deliberate — all-or-nothing thinking ends more cuts than any single meal does.</p>
+      </>
+    )},
+    { id:"days", title:"Days, and where yesterday went", body: (
+      <>
+        <p>Every day is its own page. A new one starts empty — that's a fresh day, not lost data. <strong>Nothing is ever deleted.</strong></p>
+        <p style={{ marginTop:9 }}>The row of dates at the top is how you move between them. Tap any one to open it: everything you logged that day is exactly as you left it, and it's all still editable — food, workouts, weight, steps, burn.</p>
+        <p style={{ marginTop:9 }}>Everything that's per-day works on whichever day you're looking at, including <strong>Report from today</strong>. Open Tuesday and tap it and you get Tuesday's report.</p>
+        <p style={{ marginTop:9 }}>Your log lives in this browser, on this device. It survives closing the app, restarting the phone and going offline. It doesn't sync to a laptop — use ⚙ Settings → Backup to move it, and keep a copy there now and then.</p>
+      </>
+    )},
+    { id:"board", title:"On the board today", body: (
+      <>
+        <p>The session your plan has scheduled for today — <strong>{DAY_TEMPLATE[dow(ctx.date)].name}</strong>. The 21 weeks run to a fixed weekly shape: two easy runs with upper-body work, court sports, Cindy on Wednesday, a long run Saturday, recovery Thursday.</p>
+        <p style={{ marginTop:9 }}>It's a plan, not an order. <strong>Do something else</strong> swaps in whatever you actually feel like and still counts it as training — the app would rather you moved and logged it honestly than skipped it because it wasn't the prescribed thing.</p>
+      </>
+    )},
+    { id:"mileage", title:"Week mileage", body: (
+      <>
+        <p>Running miles logged this week against what the plan asks for: <strong>{round(D.weekMiles,1)} of {D.weekTarget}</strong>. The three figures underneath are the individual days the plan puts miles on — Monday, Friday and Saturday.</p>
+        <p style={{ marginTop:9 }}><strong>Only runs count here.</strong> Walks are logged separately and deliberately don't add to this, because the number is tracking the running base you're building, not distance moved. A treadmill run still counts — only the surface differs.</p>
+        <p style={{ marginTop:9 }}>Miles climb week to week across the 21 — that progression is the whole point, and it's why the target changes as you go.</p>
+      </>
+    )},
+    { id:"cindy", title:"Cindy and the benchmark", body: (
+      <>
+        <p>Cindy is a 20-minute AMRAP — as many rounds as possible of 5 pull-ups, 10 push-ups, 15 air squats. One round is 30 reps.</p>
+        <p style={{ marginTop:9 }}>It's the plan's fitness test. Same workout, same duration, every time, so the score is directly comparable week to week. Losing fat while your Cindy score holds or climbs is the clearest evidence you're keeping muscle — which is the thing that separates a good cut from just getting smaller.</p>
+        <p style={{ marginTop:9 }}>Week 4 is the max-effort baseline. Most other weeks are run at about 80% — smooth, not shattered.</p>
       </>
     )},
     { id:"free", title:"Free days", body: (
@@ -2852,7 +2886,10 @@ function Train({ ctx }) {
       <Card>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
           <div>
-            <Eyebrow color="var(--lane)">Week {D.wk.w} mileage</Eyebrow>
+            <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+              <Eyebrow color="var(--lane)">Week {D.wk.w} mileage</Eyebrow>
+              <Why label="week mileage" onClick={()=>ctx.openGuide("mileage")} />
+            </div>
             <div style={{ display:"flex", alignItems:"baseline", gap:5, marginTop:3 }}>
               <span className="dsp" style={{ fontSize:38, color:"var(--lane)" }}>{round(D.weekMiles,1)}</span>
               <span className="mono" style={{ fontSize:12, color:"var(--ink3)" }}>/ {D.weekTarget} mi</span>
@@ -2932,7 +2969,10 @@ function Train({ ctx }) {
       {/* cindy board */}
       <Card style={{ padding:0, overflow:"hidden" }}>
         <div style={{ padding:"14px 16px", background:"var(--ink)" }}>
-          <div className="eyebrow" style={{ color:"rgba(252,252,250,.5)" }}>The Cindy board</div>
+          <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+            <div className="eyebrow" style={{ color:"rgba(252,252,250,.5)" }}>The Cindy board</div>
+            <Why label="the Cindy board" dark onClick={()=>ctx.openGuide("cindy")} />
+          </div>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginTop:5 }}>
             <div>
               <div className="dsp" style={{ fontSize:38, color:"var(--bib)" }}>

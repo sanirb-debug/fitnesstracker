@@ -1,6 +1,6 @@
 /* Offline cache for The Cut.
    Bump CACHE when you redeploy so phones pick up the new build. */
-const CACHE = "the-cut-v9";
+const CACHE = "the-cut-v10";
 const SHELL = [
   "./", "./index.html", "./app.js", "./manifest.webmanifest",
   "./favicon.png", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png",
@@ -44,15 +44,40 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // App shell: cache first, fall back to network, then to the cached page.
-  if (url.origin === location.origin) {
+  if (url.origin !== location.origin) return;
+
+  /* The code itself is network-first.
+
+     Cache-first here meant every deploy took two openings to appear: the page
+     you were looking at had already been served the previous build, and the new
+     one only installed behind it. In between the app looked broken — buttons
+     that had been added simply weren't there. Freshness matters more than the
+     few hundred ms, and GitHub Pages answers a revalidation with a 304, so the
+     usual cost is a round trip and not a re-download. Offline still works: the
+     cache is right there in the catch. */
+  const isCode = req.mode === "navigate" ||
+    /\/(index\.html|app\.js|manifest\.webmanifest)$/.test(url.pathname) ||
+    url.pathname.endsWith("/");
+
+  if (isCode) {
     e.respondWith(
-      caches.match(req).then((hit) =>
-        hit || fetch(req).then((res) => {
-          if (res.ok) caches.open(CACHE).then((c) => c.put(req, res.clone()));
+      fetch(req)
+        .then((res) => {
+          if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
           return res;
-        }).catch(() => caches.match("./index.html"))
-      )
+        })
+        .catch(() => caches.match(req).then((hit) => hit || caches.match("./index.html")))
     );
+    return;
   }
+
+  // Icons and the like never change under a given build — cache first is fine.
+  e.respondWith(
+    caches.match(req).then((hit) =>
+      hit || fetch(req).then((res) => {
+        if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
+        return res;
+      }).catch(() => caches.match("./index.html"))
+    )
+  );
 });

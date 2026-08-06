@@ -91,7 +91,20 @@ in `index.html`, `manifest.webmanifest` and `sw.js` must be `./app.js`, not `/ap
 It's empty; make sure it survives every commit.
 
 **Bump the SW cache on every deploy.** `const CACHE = "the-cut-v1"` → `v2` → … .
-Otherwise installed phones keep serving the stale build. `npm run release` does it.
+`npm run release` does it.
+
+**`sw.js` is network-first for the code, cache-first for everything else.** Don't
+"optimise" the shell back to cache-first. It was cache-first once and every
+deploy took two openings to show up: the page in front of you had already been
+served the previous build while the new one installed silently behind it. In
+between, the app looked broken — buttons that had just been added simply weren't
+there, and the obvious read is "it's frozen", not "it's stale". Freshness is
+worth the round trip; Pages answers revalidation with a 304, and offline still
+works because the cache is the fallback in the `catch`.
+
+`index.html` also reloads once on `controllerchange`, but **only when a
+controller already existed** — on a first install the new worker claiming the
+page is not an update, and reloading there would be a loop.
 
 **Use `clone()`, not bare `structuredClone`.** `clone()` (top of `src/App.jsx`) falls
 back to a JSON round-trip. Unguarded `structuredClone` crashed on older Safari and
