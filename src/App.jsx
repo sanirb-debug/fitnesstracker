@@ -855,6 +855,42 @@ export default function App() {
     setTimeout(() => setToast(null), 2600);
   }, []);
 
+  /* Follow the calendar over midnight.
+
+     `date` was read once at load and never again, so an app left open — or, more
+     usually on a phone, resumed from the background — kept showing yesterday
+     until you tapped the strip. Anything logged then landed on the wrong day.
+
+     Only follow the roll if you were actually sitting on the old today: if
+     you've deliberately gone back to edit Tuesday, midnight shouldn't drag you
+     forward mid-edit. Timers are suspended while backgrounded on iOS, so the
+     visibility and focus checks are what actually catch it in practice; the
+     interval is for the app being left open on screen. */
+  useEffect(() => {
+    if (!ready) return;
+    let today = iso(new Date());
+    const check = () => {
+      const now = iso(new Date());
+      if (now === today) return;
+      const previous = today;
+      today = now;
+      setDate(d => {
+        if (d !== previous) return d;      // browsing another day — leave it alone
+        flash(`New day — ${fmtShort(now)}`);
+        return now;
+      });
+    };
+    const onVis = () => { if (document.visibilityState === "visible") check(); };
+    const timer = setInterval(check, 30000);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", check);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", check);
+    };
+  }, [ready, flash]);
+
   const update = useCallback((fn) => {
     setState(prev => fn(clone(prev)));
   }, []);
