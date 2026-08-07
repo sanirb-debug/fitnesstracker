@@ -802,6 +802,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [guide, setGuide] = useState(null);   // null | { only: string|null }
   const [goalOpen, setGoalOpen] = useState(false);
+  const [exOpen, setExOpen] = useState(null);   // null | { only: string[]|null }
   const [saveStatus, setSaveStatus] = useState("idle");  // idle | saving | saved | failed
   const [storageOK, setStorageOK] = useState(true);
   const hydrated = useRef(false);
@@ -913,8 +914,9 @@ export default function App() {
 
   const openGuide = useCallback((only = null) => setGuide({ only }), []);
   const openGoal = useCallback(() => setGoalOpen(true), []);
+  const openExercises = useCallback((only = null) => setExOpen({ only }), []);
 
-  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout, updateWorkout, openGuide, openGoal,
+  const ctx = { state, update, patchDay, addFood, removeFood, updateFood, addWorkout, removeWorkout, updateWorkout, openGuide, openGoal, openExercises,
     date, setDate, D, flash, setTab, setState, saveStatus, storageOK, flush };
 
   if (!ready) return (
@@ -944,6 +946,12 @@ export default function App() {
       </div>
 
       {settingsOpen && <Settings ctx={ctx} onClose={()=>setSettingsOpen(false)} />}
+
+      {exOpen && (
+        <Sheet onClose={()=>setExOpen(null)} title={exOpen.only && exOpen.only.length ? "Today's movements" : "How to do the movements"}>
+          <ExerciseGuide ctx={ctx} only={exOpen.only} onDone={()=>setExOpen(null)} onAll={()=>setExOpen({ only:null })} />
+        </Sheet>
+      )}
 
       {goalOpen && (
         <Sheet onClose={()=>setGoalOpen(false)} title="Your goal">
@@ -1251,6 +1259,13 @@ function Today({ ctx }) {
             </Btn>
             {D.swap && <Btn kind="quiet" size="sm" onClick={()=>{ patchDay(date,{swap:null}); flash("Back to the plan"); }}>Undo</Btn>}
           </div>
+          {!D.swap && (DAY_EXERCISES[dow(date)] || []).length > 0 && (
+            <button className="tapfade" onClick={()=>ctx.openExercises(DAY_EXERCISES[dow(date)])}
+              style={{ marginTop:11, fontSize:12.5, fontWeight:600, color:"var(--bib)",
+                background:"transparent", padding:0, display:"block" }}>
+              How do I do these? →
+            </button>
+          )}
         </div>
       </Card>
 
@@ -1380,6 +1395,200 @@ function StepsForm({ ctx, onDone }) {
         {D.day.steps != null && (
           <Btn kind="ghost" size="md" onClick={()=>{ patchDay(date,{steps:null}); flash("Steps cleared"); onDone(); }}>Clear</Btn>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- how to actually do the movements ----------
+
+   Only what this plan prescribes — no encyclopedia. Every entry carries a
+   scaling line, because "Pull-ups max" is a useless instruction to someone who
+   can't yet do one, and the honest answer is a progression rather than skipping
+   the day. */
+
+const EXERCISES = [
+  { id:"dips", name:"Dips", day:"Monday — Upper Push", dose:"4 sets of 8–12",
+    how:[
+      "Grip parallel bars, arms locked, shoulders pressed down away from your ears.",
+      "Lean the torso a few degrees forward and keep it there — upright targets triceps, leaning hits chest.",
+      "Lower under control until your upper arms are roughly parallel to the floor.",
+      "Press back up until the elbows lock out. That's one.",
+    ],
+    watch:"Shoulders shrugging up toward your ears, or dropping so deep the shoulder rolls forward. Depth past parallel is where dip injuries come from.",
+    easier:"Bench dips with feet on the floor, or band-assisted on the bars.",
+    harder:"Slow the lowering to 3 seconds before adding weight.",
+    why:"The heaviest pushing movement you own without a gym. It's what keeps chest and triceps while you're eating under maintenance." },
+
+  { id:"decline-pushups", name:"Decline push-ups", day:"Monday — Upper Push", dose:"4 sets of 10–15",
+    how:[
+      "Feet raised on a bench, chair or bed; hands slightly wider than shoulders.",
+      "Squeeze glutes and brace your stomach so hips, spine and head hold one line.",
+      "Lower until your chest is an inch off the floor, elbows tracking back at about 45°, not flared to the sides.",
+      "Press away and finish by pushing the floor down — let the shoulder blades spread at the top.",
+    ],
+    watch:"Hips sagging, or the head craning forward to touch first. Elbows at 90° to the body is the shoulder-pain position.",
+    easier:"Feet on the floor, or hands raised instead.",
+    harder:"Raise the feet higher, or pause a second at the bottom.",
+    why:"The decline shifts load onto the upper chest and shoulders, which ordinary push-ups under-train." },
+
+  { id:"hanging-leg-raises", name:"Hanging leg raises", day:"Monday — Upper Push", dose:"4 sets to control failure",
+    how:[
+      "Hang from the bar, shoulders active — pull them down slightly rather than dangling loose.",
+      "Without swinging, tilt the pelvis back and lift the legs toward your chest.",
+      "Go as high as you can keep control; knees bent is fine and still counts.",
+      "Lower slowly. Stopping the swing is most of the work.",
+    ],
+    watch:"Kipping the legs up with momentum. If you're swinging, it's your hip flexors doing it, not your abs.",
+    easier:"Knees tucked, or lying leg raises on the floor.",
+    harder:"Straight legs to toes-to-bar, or pause at the top.",
+    why:"Direct core work that also trains the grip and shoulders you need for Cindy's pull-ups." },
+
+  { id:"pullups", name:"Pull-ups", day:"Wednesday (Cindy) · Friday — Upper Pull", dose:"Cindy: 5 per round · Friday: max sets",
+    how:[
+      "Hang from the bar with palms facing away, hands about shoulder-width and a bit wider.",
+      "Start from a full dead hang — arms straight. The plan is explicit about this.",
+      "Pull the elbows down and back toward your ribs, chest leading, until your chin clears the bar.",
+      "Lower all the way back to straight arms. Half reps don't count.",
+    ],
+    watch:"Stopping short at the bottom. Full lockout at the bottom is written into your week 2 note for a reason — partial reps inflate your Cindy score and stall the strength.",
+    easier:"Band-assisted, or jump to the top and lower yourself slowly (5 seconds). Negatives build the strength fastest.",
+    harder:"Pause with your chin over the bar, or add weight.",
+    why:"The backbone of the pull day and a third of Cindy. It's also the honest test of whether you're keeping muscle through the cut." },
+
+  { id:"chinups", name:"Chin-ups", day:"Friday — Upper Pull", dose:"max sets",
+    how:[
+      "Same as a pull-up but palms facing you, hands about shoulder-width.",
+      "Dead hang, pull until the chin clears, lower to straight arms.",
+    ],
+    watch:"Same bottom-position rule. The underhand grip lets you cheat with the biceps — keep leading with the chest.",
+    easier:"Band-assisted or slow negatives.",
+    harder:"Add weight, or slow the lowering.",
+    why:"More biceps and lower-lat than the pull-up. Pairing both on Friday covers the pulling pattern from two angles." },
+
+  { id:"lsit", name:"L-sit hold", day:"Friday — Upper Pull", dose:"4 sets, logged in seconds",
+    how:[
+      "Support yourself on parallel bars, dip bars, or the floor with hands flat beside your hips.",
+      "Press the shoulders down, lock the elbows, lift the feet.",
+      "Straighten the legs to a right angle with the torso and hold. Point the toes.",
+      "Stop the set when the legs drop or the back rounds — time under good position is the point.",
+    ],
+    watch:"Shoulders creeping up toward the ears and the lower back rounding. Ten honest seconds beats thirty scrappy ones.",
+    easier:"Tuck knees to chest, or one leg at a time.",
+    harder:"Raise the legs above parallel, or hold from a hanging bar.",
+    why:"An isometric that trains the core in the exact bracing position running and court sports demand." },
+
+  { id:"pushups", name:"Push-ups", day:"Wednesday — Cindy", dose:"10 per round",
+    how:[
+      "Hands under the shoulders, body in one line from heels to head.",
+      "Lower until the chest touches the deck — the plan says chest to deck, and that's the standard your score depends on.",
+      "Press back to locked elbows.",
+    ],
+    watch:"Hips sagging or piking up as you fatigue. Under AMRAP fatigue, depth is the first thing to go — and the first thing that makes your score dishonest.",
+    easier:"Hands raised on a bench or box. Keep the full range rather than dropping to knees.",
+    harder:"Slow the descent, or add a decline.",
+    why:"Cindy's middle movement and the highest-volume pushing you'll do all week." },
+
+  { id:"airsquats", name:"Air squats", day:"Wednesday — Cindy", dose:"15 per round",
+    how:[
+      "Feet shoulder-width, toes turned out slightly.",
+      "Push the hips back and down, keeping the chest up and the weight through the mid-foot.",
+      "Descend until the hip crease drops below the top of the knee.",
+      "Stand fully — hips and knees locked out at the top before the next rep.",
+    ],
+    watch:"Knees caving inward, heels lifting, and not standing all the way up between reps when you're breathing hard.",
+    easier:"Squat to a box or chair to guide the depth.",
+    harder:"Slow the lowering, or pause at the bottom.",
+    why:"The leg volume in Cindy, and why it's placed on Wednesday — 48 hours of recovery before Saturday's long run." },
+
+  { id:"zone2", name:"Zone 2 / easy running", day:"Monday & Friday after lifting", dose:"the week's easy miles",
+    how:[
+      "Run at a pace where you could hold a full conversation in complete sentences.",
+      "If you have a heart rate strap, that's roughly 60–70% of max — for you, very approximately 120–145 bpm.",
+      "Slower than feels right. Almost everyone runs their easy days too fast.",
+    ],
+    watch:"Drifting into a moderate-hard pace. Your app flags an easy run logged above 165 bpm for exactly this reason.",
+    easier:"Run-walk intervals. Walking to keep the heart rate down is correct, not a failure.",
+    harder:"Don't. The point of these miles is that they're easy — the hard days are Cindy and court sports.",
+    why:"80% of your miles are meant to be here. It builds the aerobic base without the fatigue that would wreck the other sessions." },
+
+  { id:"mobility", name:"Mobility & foam rolling", day:"Thursday — Active Recovery", dose:"about 15 minutes",
+    how:[
+      "Foam roll quads and calves — the plan names both specifically.",
+      "Roll slowly, and when you find a tender spot stop and breathe on it for 20–30 seconds rather than sawing back and forth.",
+      "Follow with easy range-of-motion work: leg swings, ankle circles, hip openers.",
+      "Then walk. Ten thousand steps, no running and no jumping.",
+    ],
+    watch:"Treating Thursday as an optional day. Your week 7 note calls this non-negotiable — it's what keeps the IT bands and calves from ending the block.",
+    easier:"A tennis or lacrosse ball for calves and feet if you don't have a roller.",
+    harder:"Not the point. This day is deliberately zero-impact.",
+    why:"The only session whose job is to let everything else keep happening." },
+];
+
+const DAY_EXERCISES = {
+  1: ["dips","decline-pushups","hanging-leg-raises","zone2"],
+  2: [], 3: ["pullups","pushups","airsquats"],
+  4: ["mobility"], 5: ["pullups","chinups","lsit","zone2"],
+  6: ["zone2"], 0: ["mobility"],
+};
+
+function ExerciseGuide({ ctx, only, onDone, onAll }) {
+  const list = only && only.length ? EXERCISES.filter(e => only.includes(e.id)) : EXERCISES;
+  const [open, setOpen] = useState(list.length === 1 ? list[0].id : null);
+  return (
+    <div>
+      {list.length === 0 && (
+        <div style={{ fontSize:12.5, color:"var(--ink2)", lineHeight:1.55 }}>
+          Nothing prescribed today — it's court sports or rest. Tap below for the full list.
+        </div>
+      )}
+      {list.map(e => {
+        const isOpen = open === e.id;
+        return (
+          <div key={e.id} style={{ borderBottom:"1px solid var(--rule)" }}>
+            <button onClick={()=>setOpen(isOpen ? null : e.id)} className="tapfade"
+              style={{ width:"100%", textAlign:"left", background:"transparent", padding:"11px 0" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:10 }}>
+                <span style={{ fontSize:14, fontWeight:700 }}>{e.name}</span>
+                <span style={{ color:"var(--ink3)", fontSize:12, transform:isOpen?"rotate(90deg)":"none",
+                  transition:"transform .2s" }}>›</span>
+              </div>
+              <div className="mono" style={{ fontSize:10, color:"var(--ink3)", marginTop:2 }}>
+                {e.day} · {e.dose}
+              </div>
+            </button>
+            {isOpen && (
+              <div className="rise" style={{ paddingBottom:13 }}>
+                <ol style={{ margin:"0 0 10px", paddingLeft:17 }}>
+                  {e.how.map((h,i)=>(
+                    <li key={i} style={{ fontSize:12.5, color:"var(--ink2)", lineHeight:1.55, marginBottom:4 }}>{h}</li>
+                  ))}
+                </ol>
+                <div style={{ padding:"9px 11px", background:"rgba(198,65,58,.07)", borderRadius:4, marginBottom:8 }}>
+                  <div className="eyebrow" style={{ fontSize:8, color:"var(--warn)" }}>Watch for</div>
+                  <div style={{ fontSize:12, color:"var(--ink2)", lineHeight:1.5, marginTop:3 }}>{e.watch}</div>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+                  <div style={{ padding:"8px 10px", background:"rgba(76,140,74,.08)", borderRadius:4 }}>
+                    <div className="eyebrow" style={{ fontSize:8, color:"var(--moss)" }}>Can't do it yet</div>
+                    <div style={{ fontSize:11.5, color:"var(--ink2)", lineHeight:1.45, marginTop:3 }}>{e.easier}</div>
+                  </div>
+                  <div style={{ padding:"8px 10px", background:"rgba(30,111,217,.07)", borderRadius:4 }}>
+                    <div className="eyebrow" style={{ fontSize:8, color:"var(--lane)" }}>Too easy</div>
+                    <div style={{ fontSize:11.5, color:"var(--ink2)", lineHeight:1.45, marginTop:3 }}>{e.harder}</div>
+                  </div>
+                </div>
+                <div style={{ fontSize:11.5, color:"var(--ink3)", lineHeight:1.5, fontStyle:"italic" }}>
+                  {e.why}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <div style={{ display:"flex", gap:7, marginTop:14 }}>
+        <Btn kind="solid" size="md" full onClick={onDone}>Done</Btn>
+        {only && only.length > 0 && <Btn kind="ghost" size="md" onClick={onAll}>All movements</Btn>}
       </div>
     </div>
   );
@@ -3119,6 +3328,9 @@ function Train({ ctx }) {
       {/* logging buttons */}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
         <Btn kind="lane" size="lg" onClick={()=>setSheet("run")}>Run or walk</Btn>
+        <Btn kind="ghost" size="lg" onClick={()=>ctx.openExercises()} style={{ gridColumn:"1 / -1" }}>
+          How to do the movements
+        </Btn>
         <Btn kind="solid" size="lg" onClick={()=>setSheet("strength")}>Log strength</Btn>
         <Btn kind="bib" size="lg" onClick={()=>setSheet("cindy")}>Start Cindy</Btn>
         <Btn kind="ghost" size="lg" onClick={()=>setSheet("session")}>Any session</Btn>
