@@ -136,7 +136,21 @@ The wrapper zeroes `.hc`'s own page layout (`minHeight`, `background`,
 `paddingTop`) so it paints nothing itself.
 
 **`calTarget` is derived from burn — editing burn edits the diet.**
-`calTarget = max(1700, round((burn - deficit)/25)*25)`. `day.burnKind` decides how
+`calTarget = max(1700, round((avgBurn - deficit)/25)*25)`, where `avgBurn` is a
+**7-day rolling** burn (today plus the previous six; days with nothing logged
+fall back to `formulaBurn`).
+
+**Don't put today's burn back in that formula.** It was a single day once, and a
+recovery day measured off a watch comes in far below the 1.55-factor estimate —
+enough to drive the target onto the 1,700 floor on exactly the days that are
+supposed to be easy, while a long run pushed it near 3,000. Fat loss doesn't
+settle up daily, and neither does the week budget this app is built around. On
+the rolling average one quiet day moves the target by a seventh: ~2,125 on a
+recovery day, ~2,325 after a long run.
+
+Every preview that shows a target — `BurnForm`, `GoalForm` — must run the same
+rolling maths (`(otherBurnSum + b) / 7`), or the sheet and the rings disagree
+about what you're allowed to eat. `day.burnKind` decides how
 `day.burn` becomes that burn:
 
 | `burnKind` | burn | means |

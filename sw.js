@@ -1,6 +1,6 @@
 /* Offline cache for The Cut.
    Bump CACHE when you redeploy so phones pick up the new build. */
-const CACHE = "the-cut-v11";
+const CACHE = "the-cut-v12";
 const SHELL = [
   "./", "./index.html", "./app.js", "./manifest.webmanifest",
   "./favicon.png", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png",

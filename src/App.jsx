@@ -701,7 +701,20 @@ function useDerived(state, date) {
     /* The deficit can be steered by rate or by date, so resolve it rather than
        reading P.deficit straight. */
     const goal = goalMath(P, latestTrend, date);
-    const calTarget = Math.max(1700, Math.round((burn - goal.deficit) / 25) * 25);
+
+    /* The target comes off a 7-day rolling burn, not today's.
+
+       Taken off a single day it swung violently: a recovery day with no run
+       measures far under the estimate and drove the target onto the 1,700 floor,
+       while a long-run day pushed it near 3,000. Fat loss doesn't settle up
+       daily and neither does the week budget this app is built around, so one
+       quiet day now moves the target by a seventh instead of all of it. Days
+       with nothing logged fall back to the formula, so this degrades to the old
+       behaviour when there's no history yet. */
+    const otherBurnSum = Array.from({length:6}, (_,i) => addDays(date, -(i+1)))
+      .reduce((sum, d) => sum + (state.days[d] ? dayBurn(state.days[d], formulaBurn) : formulaBurn), 0);
+    const avgBurn = Math.round((otherBurnSum + burn) / 7);
+    const calTarget = Math.max(1700, Math.round((avgBurn - goal.deficit) / 25) * 25);
 
     // This week's running
     const weekDays = Array.from({length:7}, (_,i) => addDays(wkStart, i));
@@ -761,7 +774,7 @@ function useDerived(state, date) {
     const totalMiles = Object.values(state.days).reduce((s,d) =>
       s + d.workouts.filter(w=>w.type==="run").reduce((a,w)=>a+(w.miles||0),0), 0);
 
-    return { P, day, wk, wkStart, weekDays, cal, pro, carb, fat, burn, burnSource, formulaBurn, trainingCal, goal,
+    return { P, day, wk, wkStart, weekDays, cal, pro, carb, fat, burn, burnSource, formulaBurn, trainingCal, goal, avgBurn, otherBurnSum,
       calTarget, weights, trend, latest, latestTrend, weekMiles, weekTarget,
       avgCal, avgPro, streak, totalDeficit, lost, perWeek, projDate, totalMiles,
       weekBudget, weekSpent, perDayLeft, daysAfter, dayIdx, freeDaysThisWeek, swap };
@@ -1386,7 +1399,7 @@ function GoalForm({ ctx, onDone }) {
   const draft = { ...P, goalMode:mode, goalYear:+weight || P.goalYear,
     goalRate:+rate || 0, goalDate:date, deficit:+deficit || 0 };
   const g = goalMath(draft, D.latestTrend, ctx.date);
-  const target = Math.max(1700, Math.round((D.burn - g.deficit) / 25) * 25);
+  const target = Math.max(1700, Math.round((D.avgBurn - g.deficit) / 25) * 25);
   const weeks = g.weeksNeeded;
 
   const save = () => {
@@ -1629,7 +1642,8 @@ const guideSections = (ctx) => {
       <>
         <p>Each step feeds the next, so if the first one is wrong they all are.</p>
         <ol style={{ paddingLeft:17, margin:"9px 0 0" }}>
-          <li><strong>Your burn.</strong> What your body spends in a day. Right now: <strong>{D.burn.toLocaleString()}</strong> ({burnLabel(D.burnSource)}). Left alone, the app works it out from your height, weight, age and activity level.</li>
+          <li><strong>Your burn.</strong> What your body spends in a day. Today: <strong>{D.burn.toLocaleString()}</strong> ({burnLabel(D.burnSource)}). Left alone, the app works it out from your height, weight, age and activity level.</li>
+          <li><strong>Averaged over 7 days</strong> → <strong>{D.avgBurn.toLocaleString()}</strong>. The target runs off this, not today alone, so a recovery day doesn't collapse what you're allowed to eat and a long run doesn't blow it open. One quiet day moves it by a seventh.</li>
           <li><strong>Minus your deficit</strong> of {D.goal.deficit}/day → <strong>today's target, {D.calTarget.toLocaleString()}</strong>. A pound of fat is about 3,500 calories, so that's <strong>{D.goal.rate} lb a week</strong>. Change it under ⚙ Settings → Goal.</li>
           <li><strong>Times seven</strong> → the week's budget, <strong>{wkBudget.toLocaleString()}</strong>.</li>
           <li><strong>What's left, spread over the days remaining</strong> → the per-day pace on the budget card.</li>
@@ -1924,8 +1938,9 @@ function BurnForm({ ctx, onDone }) {
                 : kind === "active" ? restN + n
                 : kind === "extra"  ? Math.round(D.formulaBurn + n)
                 : n;
-  const newTarget = Math.max(1700, Math.round((effBurn - D.goal.deficit) / 25) * 25);
-  const usualTarget = Math.max(1700, Math.round((D.formulaBurn - D.goal.deficit) / 25) * 25);
+  const avgWith = (b) => Math.round((D.otherBurnSum + b) / 7);
+  const newTarget = Math.max(1700, Math.round((avgWith(effBurn) - D.goal.deficit) / 25) * 25);
+  const usualTarget = Math.max(1700, Math.round((avgWith(D.formulaBurn) - D.goal.deficit) / 25) * 25);
   const delta = newTarget - usualTarget;
 
   // A whole-day total below roughly half the estimate isn't a whole day; a
@@ -2042,7 +2057,11 @@ function BurnForm({ ctx, onDone }) {
           <div className="mono" style={{ fontSize:10.5, color:"var(--ink3)", marginTop:3 }}>
             {delta === 0 ? "same as your usual day"
               : `${delta > 0 ? "+" : ""}${delta.toLocaleString()} vs your usual ${usualTarget.toLocaleString()}`}
-            {kind !== "total" && ` · ${effBurn.toLocaleString()} total burn`}
+            {kind !== "total" && ` · ${effBurn.toLocaleString()} burn today`}
+          </div>
+          <div className="mono" style={{ fontSize:9.5, color:"var(--ink3)", marginTop:5, lineHeight:1.45 }}>
+            Your target runs off a 7-day average, so today's number moves it by about a seventh — that's
+            why a big day doesn't hand you all of it back at once.
           </div>
         </div>
       )}
